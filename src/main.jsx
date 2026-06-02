@@ -367,6 +367,16 @@ function mapInvestment(investment) {
   };
 }
 
+function mapBalanceEdit(edit) {
+  const investmentId = edit.investmentId || edit.investment_id || '';
+  return {
+    ...edit,
+    id: entityId(edit),
+    investmentId: typeof investmentId === 'object' ? entityId(investmentId) : investmentId,
+    editedAt: edit.editedAt || edit.createdAt || edit.created_at ? new Date(edit.editedAt || edit.createdAt || edit.created_at).getTime() : nowMs()
+  };
+}
+
 function normalizeState(raw) {
   const plans = Array.isArray(raw?.plans) && raw.plans.length ? raw.plans : seedState.plans;
   const investments = Array.isArray(raw?.investments) ? raw.investments.map((investment) => ({
@@ -622,7 +632,7 @@ function App() {
       plans: (bootstrap.plans || []).map(mapPlan),
       addresses: bootstrap.addresses || prev.addresses,
       investments: investments.map(mapInvestment),
-      balanceEdits: (balanceEdits || []).map((edit) => ({ ...edit, id: entityId(edit), investmentId: entityId(edit.investmentId) || edit.investmentId, editedAt: edit.createdAt ? new Date(edit.createdAt).getTime() : nowMs() }))
+      balanceEdits: (balanceEdits || []).map(mapBalanceEdit)
     }));
   }
 
@@ -1929,7 +1939,7 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
         </div>
         <div className="panel">
           <h2>Balance Edit History</h2>
-          <DataTable headers={['Edited At', 'Investment ID', 'New Balance']} rows={state.balanceEdits.map((e) => [new Date(e.editedAt).toLocaleString(), e.investmentId.slice(0, 8), formatMoney(e.value)])} />
+          <DataTable headers={['Edited At', 'Investment ID', 'New Balance']} rows={state.balanceEdits.map((e) => [new Date(e.editedAt).toLocaleString(), String(e.investmentId || 'Unknown').slice(0, 8), formatMoney(e.value)])} />
         </div>
       </section>
 
