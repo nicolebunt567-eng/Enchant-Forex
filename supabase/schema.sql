@@ -12,7 +12,7 @@ create table if not exists public.profiles (
 );
 
 create table if not exists public.plans (
-  id uuid primary key default gen_random_uuid(),
+  id uuid primary key default (md5(random()::text || clock_timestamp()::text)::uuid),
   name text not null,
   deposit numeric not null,
   return_amount numeric not null,
@@ -22,7 +22,7 @@ create table if not exists public.plans (
 );
 
 create table if not exists public.investments (
-  id uuid primary key default gen_random_uuid(),
+  id uuid primary key default (md5(random()::text || clock_timestamp()::text)::uuid),
   user_id uuid not null references public.profiles(id) on delete cascade,
   plan_id uuid references public.plans(id),
   plan_name text not null,
@@ -48,7 +48,7 @@ create table if not exists public.addresses (
 );
 
 create table if not exists public.balance_edits (
-  id uuid primary key default gen_random_uuid(),
+  id uuid primary key default (md5(random()::text || clock_timestamp()::text)::uuid),
   investment_id uuid references public.investments(id) on delete cascade,
   admin_id uuid references public.profiles(id),
   value numeric not null,
