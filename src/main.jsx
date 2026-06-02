@@ -47,7 +47,13 @@ const AUTH_USER_KEY = 'enchant-forex-user';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: true
+  }
+}) : null;
 const TAX_RATE = 0.165;
 const WITHDRAWAL_RATE = 0.125;
 
@@ -489,6 +495,19 @@ function App() {
     refreshPublicData();
     if (supabase) {
       hydrateSession();
+      const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
+        if (session?.access_token) {
+          localStorage.setItem(AUTH_TOKEN_KEY, session.access_token);
+          if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') hydrateSession();
+        }
+        if (event === 'SIGNED_OUT') {
+          localStorage.removeItem(AUTH_TOKEN_KEY);
+          localStorage.removeItem(AUTH_USER_KEY);
+          setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+          setPage('home');
+        }
+      });
+      return () => subscription.subscription.unsubscribe();
     } else {
       const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
       if (savedToken) hydrateSession(savedToken);
@@ -533,10 +552,17 @@ function App() {
 
   async function hydrateSession() {
     try {
+      if (supabase) {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (!data.session) throw new Error('No active session.');
+        localStorage.setItem(AUTH_TOKEN_KEY, data.session.access_token || '');
+      }
       const { user } = await apiRequest('/api/me');
       const mappedUser = mapUser(user);
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(mappedUser));
       setState((prev) => ({ ...prev, users: [mappedUser], currentUserId: mappedUser.id }));
+      setPage(mappedUser.role === 'admin' ? 'admin' : 'dashboard');
       await refreshPublicData();
       if (mappedUser.role === 'admin') await refreshAdminData();
       else await refreshUserData(mappedUser);
@@ -577,7 +603,12 @@ function App() {
 
   async function handleAuth({ token, user }) {
     const mappedUser = mapUser(user);
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
+    if (supabase) {
+      const { data } = await supabase.auth.getSession();
+      localStorage.setItem(AUTH_TOKEN_KEY, data.session?.access_token || token || '');
+    } else {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    }
     localStorage.setItem(AUTH_USER_KEY, JSON.stringify(mappedUser));
     setState((prev) => ({ ...prev, users: [mappedUser], currentUserId: mappedUser.id }));
     setPage(mappedUser.role === 'admin' ? 'admin' : 'dashboard');
