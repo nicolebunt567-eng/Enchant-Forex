@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Component, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createClient } from '@supabase/supabase-js';
 import {
@@ -613,8 +613,12 @@ function App() {
     setState((prev) => ({ ...prev, users: [mappedUser], currentUserId: mappedUser.id }));
     setPage(mappedUser.role === 'admin' ? 'admin' : 'dashboard');
     await refreshPublicData();
-    if (mappedUser.role === 'admin') await refreshAdminData();
-    else await refreshUserData(mappedUser);
+    try {
+      if (mappedUser.role === 'admin') await refreshAdminData();
+      else await refreshUserData(mappedUser);
+    } catch (error) {
+      flash(error.message);
+    }
   }
 
   const liveActions = {
@@ -1976,6 +1980,41 @@ function Gate({ setPage }) {
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="auth-shell access-shell">
+          <section className="access-card">
+            <div className="access-icon"><LifeBuoy size={24} /></div>
+            <div>
+              <p className="eyebrow">Application error</p>
+              <h1>We hit a loading issue</h1>
+              <p>{this.state.error.message || 'Refresh the page or sign in again. If this continues, check the Supabase and Vercel domain settings.'}</p>
+            </div>
+            <button className="primary full" onClick={() => window.location.assign('/')}>Reload Site</button>
+          </section>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+createRoot(document.getElementById('root')).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
 
 
