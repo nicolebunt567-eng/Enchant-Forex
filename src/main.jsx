@@ -484,6 +484,8 @@ function App() {
   const [page, setPage] = useState('home');
   const [tick, setTick] = useState(nowMs());
   const [toast, setToast] = useState('');
+  const [booting, setBooting] = useState(true);
+  const [appError, setAppError] = useState('');
   const currentUser = state.users.find((u) => u.id === state.currentUserId);
 
   useEffect(() => {
@@ -492,9 +494,21 @@ function App() {
   }, []);
 
   useEffect(() => {
-    refreshPublicData();
+    let mounted = true;
+
+    async function boot() {
+      await refreshPublicData();
+      if (supabase) {
+        await hydrateSession({ initial: true });
+      } else {
+        const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
+        if (savedToken) await hydrateSession({ initial: true });
+      }
+      if (mounted) setBooting(false);
+    }
+
+    boot();
     if (supabase) {
-      hydrateSession();
       const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
         if (session?.access_token) {
           localStorage.setItem(AUTH_TOKEN_KEY, session.access_token);
@@ -507,11 +521,15 @@ function App() {
           setPage('home');
         }
       });
-      return () => subscription.subscription.unsubscribe();
-    } else {
-      const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
-      if (savedToken) hydrateSession(savedToken);
+      return () => {
+        mounted = false;
+        subscription.subscription.unsubscribe();
+      };
     }
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -550,26 +568,33 @@ function App() {
     }
   }
 
-  async function hydrateSession() {
+  async function hydrateSession(options = {}) {
     try {
       if (supabase) {
         const { data, error } = await supabase.auth.getSession();
         if (error) throw error;
-        if (!data.session) throw new Error('No active session.');
+        if (!data.session) {
+          localStorage.removeItem(AUTH_TOKEN_KEY);
+          localStorage.removeItem(AUTH_USER_KEY);
+          setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+          return;
+        }
         localStorage.setItem(AUTH_TOKEN_KEY, data.session.access_token || '');
       }
       const { user } = await apiRequest('/api/me');
       const mappedUser = mapUser(user);
+      setAppError('');
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(mappedUser));
       setState((prev) => ({ ...prev, users: [mappedUser], currentUserId: mappedUser.id }));
       setPage(mappedUser.role === 'admin' ? 'admin' : 'dashboard');
       await refreshPublicData();
       if (mappedUser.role === 'admin') await refreshAdminData();
       else await refreshUserData(mappedUser);
-    } catch {
+    } catch (error) {
       localStorage.removeItem(AUTH_TOKEN_KEY);
       localStorage.removeItem(AUTH_USER_KEY);
       setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+      if (!options.initial) setAppError(error.message || 'Unable to restore your session.');
     }
   }
 
@@ -603,6 +628,7 @@ function App() {
 
   async function handleAuth({ token, user }) {
     const mappedUser = mapUser(user);
+    setAppError('');
     if (supabase) {
       const { data } = await supabase.auth.getSession();
       localStorage.setItem(AUTH_TOKEN_KEY, data.session?.access_token || token || '');
@@ -663,6 +689,9 @@ function App() {
     updateState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
     setPage('home');
   }
+
+  if (booting) return <LoadingScreen />;
+  if (appError) return <SystemStatus message={appError} onRetry={() => { setAppError(''); hydrateSession(); }} />;
 
   return (
     <>
@@ -1962,6 +1991,37 @@ function dashboardStage(investment) {
 
 function withdrawalLabel(investment) {
   return ['Deposit', 'Approval', 'Tracking', 'Withdrawal', 'Withdrawal Confirmation', 'Funds Release'][dashboardStage(investment)] || 'Not Started';
+}
+
+function LoadingScreen() {
+  return (
+    <main className="auth-shell access-shell">
+      <section className="access-card">
+        <div className="access-icon access-spin"><Sparkles size={24} /></div>
+        <div>
+          <p className="eyebrow">Enchant Forex</p>
+          <h1>Loading workspace</h1>
+          <p>Restoring secure access and syncing the latest account data.</p>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SystemStatus({ message, onRetry }) {
+  return (
+    <main className="auth-shell access-shell">
+      <section className="access-card">
+        <div className="access-icon"><LifeBuoy size={24} /></div>
+        <div>
+          <p className="eyebrow">Connection status</p>
+          <h1>Unable to load account</h1>
+          <p>{message}</p>
+        </div>
+        <button className="primary full" onClick={onRetry}>Try Again</button>
+      </section>
+    </main>
+  );
 }
 
 function Gate({ setPage }) {

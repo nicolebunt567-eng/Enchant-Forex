@@ -1351,6 +1351,10 @@ h3 {
   color: var(--gold-2);
 }
 
+.access-spin svg {
+  animation: softSpin 1.6s linear infinite;
+}
+
 .access-card .eyebrow {
   margin-bottom: 0.5rem;
 }
@@ -2721,6 +2725,12 @@ td button,
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes softSpin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
