@@ -732,7 +732,7 @@ function Header({ currentUser, page, setPage, logout }) {
   return (
     <header className="site-header">
       <button className="brand" onClick={() => setPage('home')} aria-label="Enchant Forex home">
-        <span className="brand-mark"><Crown size={20} /></span>
+        <span className="brand-mark"><img src="/logo.svg" alt="" /></span>
         <span>Enchant Forex</span>
       </button>
       <div className="desktop-status">

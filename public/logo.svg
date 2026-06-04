@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Enchant Forex Hub logo</title>
+  <desc id="desc">Dark circular Enchant Forex Hub badge with cyan trading icon and ring.</desc>
+  <defs>
+    <radialGradient id="badge" cx="38%" cy="30%" r="72%">
+      <stop offset="0" stop-color="#22313a"/>
+      <stop offset="0.55" stop-color="#101820"/>
+      <stop offset="1" stop-color="#060b10"/>
+    </radialGradient>
+    <linearGradient id="ice" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#c8f3ff"/>
+      <stop offset="0.48" stop-color="#68d8ff"/>
+      <stop offset="1" stop-color="#23f1df"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fff1a9"/>
+      <stop offset="0.48" stop-color="#e8bf45"/>
+      <stop offset="1" stop-color="#ad7f1f"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="64" fill="#070b0f"/>
+  <g filter="url(#shadow)">
+    <circle cx="270" cy="258" r="183" fill="url(#badge)" stroke="#344552" stroke-width="8"/>
+    <circle cx="270" cy="258" r="164" fill="none" stroke="url(#ice)" stroke-width="8" filter="url(#glow)"/>
+    <circle cx="270" cy="258" r="139" fill="none" stroke="#164252" stroke-width="2" opacity="0.65"/>
+
+    <path d="M178 126h126M357 169h-48M379 251v70M178 383h228M221 149v43M251 118v65M286 132v54M327 137v62M180 215h-54" fill="none" stroke="#17495a" stroke-width="3" stroke-linecap="round" opacity="0.46"/>
+
+    <rect x="69" y="195" width="118" height="118" rx="25" fill="#14222b" stroke="url(#ice)" stroke-width="8" filter="url(#glow)"/>
+    <g fill="none" stroke-linecap="round" stroke-width="7">
+      <path d="M103 247v54" stroke="#74ffe8"/>
+      <path d="M127 221v81" stroke="#74ffe8"/>
+      <path d="M152 214v87" stroke="#74ffe8"/>
+      <path d="M96 262h14v51H96z" stroke="#8dffe9" fill="#59d6c4"/>
+      <path d="M120 240h14v65h-14z" stroke="#8dffe9" fill="#48c9bd"/>
+      <path d="M145 236h14v60h-14z" stroke="#8dffe9" fill="#68e1ce"/>
+    </g>
+
+    <text x="203" y="250" fill="#e9edf0" font-family="Inter, Arial, sans-serif" font-size="55" font-weight="900" letter-spacing="-2">ENCHANT</text>
+    <text x="203" y="312" fill="url(#gold)" font-family="Inter, Arial, sans-serif" font-size="47" font-weight="900" letter-spacing="-1">FOREX HUB</text>
+  </g>
+</svg>
