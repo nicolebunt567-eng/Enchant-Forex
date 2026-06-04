@@ -1853,8 +1853,6 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   }
 
   async function removePlan(id) {
-    const planInUse = state.investments.some((investment) => investment.planId === id && !['withdrawn', 'rejected'].includes(investment.status));
-    if (planInUse) return flash('This plan has active or pending investments.');
     try {
       await actions.removePlan(id);
       flash('Plan removed.');
