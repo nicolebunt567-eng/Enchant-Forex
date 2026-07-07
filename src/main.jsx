@@ -2733,7 +2733,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
         </div>
         <div className="bot-stat-grid">
           <Metric title="Confirmed funding" value={formatMoney(botBalance)} icon={<CircleDollarSign />} />
-          <Metric title="Demo equity" value={formatMoney(demoEquity)} icon={<TrendingUp />} />
+          <Metric title="Equity" value={formatMoney(demoEquity)} icon={<TrendingUp />} />
           <Metric title="Active bots" value={activeSessions.length} icon={<Bot />} />
           <Metric title="Target" value="79 / 100" icon={<Target />} />
         </div>
