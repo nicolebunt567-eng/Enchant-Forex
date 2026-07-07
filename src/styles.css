@@ -8402,3 +8402,113 @@ table tr:hover td {
   background: rgba(6, 20, 38, 0.035) !important;
 }
 
+/* Dashboard light surface contrast fixes */
+.dashboard .status-rail {
+  border-color: rgba(27, 111, 242, 0.28) !important;
+  background: rgba(6, 20, 38, 0.82) !important;
+}
+
+.dashboard .status-rail div {
+  background: #fff !important;
+  color: #061426 !important;
+}
+
+.dashboard .status-rail .done {
+  background: linear-gradient(135deg, #eef7ff, #fff8ed) !important;
+}
+
+.dashboard .status-rail span {
+  background: #e8f0fb !important;
+  color: #0b3f91 !important;
+  -webkit-text-fill-color: #0b3f91;
+}
+
+.dashboard .status-rail small,
+.dashboard .status-rail .done small {
+  color: #18314f !important;
+  -webkit-text-fill-color: #18314f;
+}
+
+.dashboard .status-rail .done span {
+  background: linear-gradient(135deg, var(--brand-orange), var(--brand-amber)) !important;
+  color: #061426 !important;
+  -webkit-text-fill-color: #061426;
+}
+
+.dashboard .deposit-action-panel {
+  background: linear-gradient(145deg, #eaf8ff, #fff8ed) !important;
+  color: #061426 !important;
+}
+
+.dashboard .deposit-action-panel .input-label span {
+  color: #061426 !important;
+}
+
+.dashboard .deposit-action-panel select {
+  border-color: rgba(27, 111, 242, 0.32) !important;
+  background: #fff !important;
+  color: #061426 !important;
+  -webkit-text-fill-color: #061426;
+}
+
+.dashboard .deposit-summary {
+  color: #061426 !important;
+}
+
+.dashboard .deposit-summary div {
+  background: #fff !important;
+  color: #061426 !important;
+}
+
+.dashboard .deposit-summary small {
+  color: #38506f !important;
+  -webkit-text-fill-color: #38506f;
+}
+
+.dashboard .deposit-summary strong {
+  color: #061426 !important;
+  -webkit-text-fill-color: #061426;
+}
+
+.dashboard .activity-list > div {
+  background: #fff !important;
+  color: #061426 !important;
+}
+
+.dashboard .activity-list > div.withdraw {
+  background: #effaf4 !important;
+}
+
+.dashboard .activity-list strong {
+  color: #061426 !important;
+  -webkit-text-fill-color: #061426;
+}
+
+.dashboard .activity-list small,
+.dashboard .activity-list em {
+  color: #38506f !important;
+  -webkit-text-fill-color: #38506f;
+}
+
+.dashboard .activity-list .deposit small {
+  color: #0b5d83 !important;
+  -webkit-text-fill-color: #0b5d83;
+}
+
+.dashboard .activity-list .withdraw small {
+  color: #08744f !important;
+  -webkit-text-fill-color: #08744f;
+}
+
+.dashboard .activity-list div > span {
+  background: #e8f4ff !important;
+  color: #0b5d83 !important;
+  -webkit-text-fill-color: #0b5d83;
+}
+
+.dashboard .activity-list .withdraw > span {
+  background: #e7f7ef !important;
+  color: #08744f !important;
+  -webkit-text-fill-color: #08744f;
+}
+
