@@ -1,22 +1,26 @@
-import React, { Component, useEffect, useState } from 'react';
+import React, { Component, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createClient } from '@supabase/supabase-js';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   BadgeDollarSign,
   Banknote,
   BarChart3,
+  Bot,
   Calculator,
   Check,
   ChevronRight,
   CircleDollarSign,
   Clock3,
   Coins,
+  Copy,
   CreditCard,
   Crown,
   Edit3,
   Eye,
   EyeOff,
   Globe2,
+  KeyRound,
   Landmark,
   Layers3,
   LayoutDashboard,
@@ -26,12 +30,15 @@ import {
   Menu,
   MessageCircle,
   Radio,
+  RefreshCw,
   ReceiptText,
   Scale,
   ShieldCheck,
-  Smartphone,
+  ShoppingCart,
+  Search,
   Sparkles,
   Target,
+  Trash2,
   TrendingUp,
   Trophy,
   UserPlus,
@@ -65,16 +72,50 @@ const starterPlans = [
   { id: 'p2-10000', name: '2-Day Investment Plan', durationHours: 48, deposit: 10000, returnAmount: 95000 }
 ];
 
+const botPackages = [
+  { id: 'basic', name: 'Basic Bot', price: 150, winRate: '79% Win Rate', monthly: '100-round script', limit: '1 active bot', cycle: '1-min signal cycle', cap: 'Up to $500 / round', risk: 'Fixed sizing' },
+  { id: 'starter', name: 'Starter Bot', price: 300, winRate: '79% Win Rate', monthly: '100-round script', limit: '2 active bots', cycle: 'Timed signal cycle', cap: 'Up to $2,000 / round', risk: 'Fixed sizing' },
+  { id: 'pro', name: 'Pro Bot', price: 800, winRate: '79% Win Rate', monthly: '100-round script', limit: '5 active bots', cycle: 'Timed signal cycle', cap: 'Up to $10,000 / round', risk: 'Fixed sizing' },
+  { id: 'vip', name: 'VIP Bot', price: 1500, winRate: '79% Win Rate', monthly: '100-round script', limit: 'Unlimited bots', cycle: 'Timed signal cycle', cap: 'Unlimited size', risk: 'Fixed sizing' }
+];
+
+
+const botDepositOptions = [
+  { asset: 'USDT', name: 'Tether', network: 'TRC20', networkName: 'Tron (TRC20)', mark: '₮' },
+  { asset: 'BTC', name: 'Bitcoin', network: 'BTC', networkName: 'Bitcoin', mark: '₿' },
+  { asset: 'ETH', name: 'Ethereum', network: 'ERC20', networkName: 'Ethereum (ERC20)', mark: '◆' }
+];
+const withdrawalAssetOptions = botDepositOptions.filter((option) => ['USDT', 'BTC'].includes(option.asset));
+
 const seedState = {
   users: [],
   plans: starterPlans,
   investments: [],
+  trades: [],
+  botSessions: [],
+  botPasskeys: [],
+  botDeposits: [],
+  botWithdrawals: [],
   addresses: {
-    usdt: 'TQ9xEnchantTreasuryTRC20Address',
-    eth: '0xEnchantTreasuryEthAddress',
-    btc: 'bc1qEnchanttreasurybtcaddress'
+    usdt: 'TQ9xenchantforexReserveTRC20Address',
+    eth: '0xenchantforexReserveEthAddress',
+    btc: 'bc1qenchantforexreservebtcaddress'
   },
   balanceEdits: [],
+  poolWallet: {
+    balance: null,
+    updatedAt: null,
+    status: 'loading',
+    error: ''
+  },
+  marketQuote: {
+    symbol: 'XAU/USD',
+    price: null,
+    source: '',
+    updatedAt: null,
+    status: 'loading',
+    error: ''
+  },
   currentUserId: null
 };
 
@@ -102,6 +143,36 @@ async function apiRequest(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || 'Request failed');
   return data;
+}
+
+async function fetchPoolWallet() {
+  const response = await fetch('/api/pool-wallet', { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error('Unable to read the TRON pool wallet.');
+  const payload = await response.json();
+  const balance = Number(payload?.balance);
+  if (!Number.isFinite(balance)) throw new Error('The pool wallet returned an invalid balance.');
+  return {
+    balance,
+    updatedAt: Number(payload?.updatedAt) || Date.now(),
+    status: 'live',
+    error: ''
+  };
+}
+
+async function fetchGoldPrice() {
+  const response = await fetch('/api/gold-price', { headers: { Accept: 'application/json' } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || 'Unable to read the live gold price.');
+  const price = Number(payload?.price);
+  if (!Number.isFinite(price)) throw new Error('The gold price provider returned an invalid quote.');
+  return {
+    symbol: payload.symbol || 'XAU/USD',
+    price,
+    source: payload.source || 'Market data provider',
+    updatedAt: Number(payload.updatedAt) || Date.now(),
+    status: 'live',
+    error: ''
+  };
 }
 
 function assertSupabase() {
@@ -140,12 +211,140 @@ function mapSupabaseInvestment(row) {
   };
 }
 
+function mapTrade(row) {
+  const rawExitPrice = row.exitPrice ?? row.exit_price;
+  const rawClosedAt = row.closedAt || row.closed_at;
+  return {
+    id: entityId(row),
+    investmentId: row.investmentId || row.investment_id,
+    symbol: row.symbol || 'XAU/USD',
+    side: row.side,
+    quantity: Number(row.quantity),
+    entryPrice: Number(row.entryPrice ?? row.entry_price),
+    exitPrice: rawExitPrice !== null && rawExitPrice !== undefined ? Number(rawExitPrice) : null,
+    status: row.status,
+    realizedProfit: Number(row.realizedProfit ?? row.realized_profit ?? 0),
+    priceSource: row.priceSource || row.price_source || '',
+    externalTradeId: row.externalTradeId || row.external_trade_id || '',
+    notes: row.notes || '',
+    openedAt: new Date(row.openedAt || row.opened_at).getTime(),
+    closedAt: rawClosedAt ? new Date(rawClosedAt).getTime() : null
+  };
+}
+
+function mapBotSession(row) {
+  const rawUserId = row.userId || row.user_id;
+  return {
+    id: entityId(row),
+    userId: typeof rawUserId === 'object' ? entityId(rawUserId) : rawUserId,
+    packageId: row.packageId || row.package_id,
+    packageName: row.packageName || row.package_name,
+    tradingPair: row.tradingPair || row.trading_pair || 'XAU/USD',
+    tradeAmount: Number(row.tradeAmount ?? row.trade_amount ?? 0),
+    durationMinutes: Number(row.durationMinutes ?? row.duration_minutes ?? 1),
+    passkey: row.passkey || '',
+    status: row.status || 'pending',
+    realizedProfit: Number(row.realizedProfit ?? row.realized_profit ?? 0),
+    mode: row.mode || 'paper',
+    bias: row.bias || null,
+    analysis: Array.isArray(row.analysis) ? row.analysis : [],
+    entryPrice: row.entryPrice ?? row.entry_price ? Number(row.entryPrice ?? row.entry_price) : null,
+    exitPrice: row.exitPrice ?? row.exit_price ? Number(row.exitPrice ?? row.exit_price) : null,
+    startedAt: row.startedAt || row.started_at ? new Date(row.startedAt || row.started_at).getTime() : null,
+    endsAt: row.endsAt || row.ends_at ? new Date(row.endsAt || row.ends_at).getTime() : null,
+    completedAt: row.completedAt || row.completed_at ? new Date(row.completedAt || row.completed_at).getTime() : null,
+    roundsCompleted: Number(row.roundsCompleted ?? row.rounds_completed ?? 0),
+    wins: Number(row.wins || 0),
+    losses: Number(row.losses || 0),
+    maxRounds: Number(row.maxRounds ?? row.max_rounds ?? 100),
+    lastRoundResult: row.lastRoundResult || row.last_round_result || null,
+    lastRoundProfit: Number(row.lastRoundProfit ?? row.last_round_profit ?? 0),
+    createdAt: row.createdAt || row.created_at ? new Date(row.createdAt || row.created_at).getTime() : nowMs(),
+    updatedAt: row.updatedAt || row.updated_at ? new Date(row.updatedAt || row.updated_at).getTime() : null,
+    profile: row.profiles || (typeof rawUserId === 'object' ? rawUserId : null)
+  };
+}
+
+function mapBotPasskey(row) {
+  const rawUserId = row.userId || row.user_id;
+  return {
+    id: entityId(row),
+    userId: typeof rawUserId === 'object' ? entityId(rawUserId) : rawUserId,
+    packageId: row.packageId || row.package_id,
+    packageName: row.packageName || row.package_name,
+    status: row.status || 'unused',
+    reusable: Boolean(row.reusable),
+    useCount: Number(row.useCount ?? row.use_count ?? 0),
+    lastUsedAt: row.lastUsedAt || row.last_used_at ? new Date(row.lastUsedAt || row.last_used_at).getTime() : null,
+    expiresAt: new Date(row.expiresAt || row.expires_at).getTime(),
+    usedAt: row.usedAt || row.used_at ? new Date(row.usedAt || row.used_at).getTime() : null,
+    createdAt: new Date(row.createdAt || row.created_at).getTime(),
+    profile: row.profiles || (typeof rawUserId === 'object' ? rawUserId : null)
+  };
+}
+
+function mapBotDeposit(row) {
+  return {
+    id: entityId(row),
+    userId: row.userId || row.user_id,
+    asset: row.asset,
+    network: row.network,
+    amountUsd: Number(row.amountUsd ?? row.amount_usd ?? 0),
+    paymentAddress: row.paymentAddress || row.payment_address || '',
+    status: row.status || 'pending',
+    expiresAt: new Date(row.expiresAt || row.expires_at).getTime(),
+    confirmedAt: row.confirmedAt || row.confirmed_at ? new Date(row.confirmedAt || row.confirmed_at).getTime() : null,
+    createdAt: new Date(row.createdAt || row.created_at).getTime()
+  };
+}
+
+function mapBotWithdrawal(row) {
+  return {
+    id: entityId(row),
+    userId: row.userId || row.user_id,
+    amountUsd: Number(row.amountUsd ?? row.amount_usd ?? 0),
+    asset: row.asset,
+    network: row.network,
+    walletAddress: row.walletAddress || row.wallet_address || '',
+    status: row.status || 'requested',
+    transactionId: row.transactionId || row.transaction_id || '',
+    adminNote: row.adminNote || row.admin_note || '',
+    processedAt: row.processedAt || row.processed_at ? new Date(row.processedAt || row.processed_at).getTime() : null,
+    createdAt: new Date(row.createdAt || row.created_at).getTime()
+  };
+}
+
+function isMissingBotSessionTable(error) {
+  return /bot_sessions|schema cache|relation .* does not exist/i.test(error?.message || '');
+}
+
+function isMissingBotDepositTable(error) {
+  return /bot_deposits|schema cache|relation .* does not exist/i.test(error?.message || '');
+}
+
+function isMissingBotPasskeyTable(error) {
+  return /bot_passkeys|issue_bot_test_passkey|schema cache|relation .* does not exist/i.test(error?.message || '');
+}
+
+function isMissingBotWithdrawalTable(error) {
+  return /bot_withdrawals|request_bot_withdrawal|schema cache|relation .* does not exist/i.test(error?.message || '');
+}
+
+function isPaperSessionStartStateError(error) {
+  return /ready paper session not found|paper session is not ready to start/i.test(error?.message || '');
+}
+
+function isPaperSessionCompleteStateError(error) {
+  return /paper session is not ready to complete/i.test(error?.message || '');
+}
+
 function toInvestmentPatch(patch) {
   const output = {};
   if (patch.status !== undefined) output.status = patch.status;
   if (patch.withdrawalStep !== undefined) output.withdrawal_step = patch.withdrawalStep;
   if (patch.startedAt !== undefined) output.started_at = new Date(patch.startedAt).toISOString();
   if (patch.endsAt !== undefined) output.ends_at = new Date(patch.endsAt).toISOString();
+  if (patch.durationHours !== undefined) output.duration_hours = patch.durationHours;
   if (patch.manualBalance !== undefined) output.manual_balance = patch.manualBalance;
   if (patch.projectedTarget !== undefined) output.projected_target = patch.projectedTarget;
   output.updated_at = new Date().toISOString();
@@ -216,6 +415,126 @@ async function supabaseRequest(path, options = {}) {
     return (data || []).map(mapSupabaseInvestment);
   }
 
+  if (path === '/api/me/trades') {
+    const { data, error } = await supabase.from('trades').select('*').order('opened_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map(mapTrade);
+  }
+
+  if (path === '/api/me/bot-sessions' && method === 'GET') {
+    const { data, error } = await supabase.from('bot_sessions').select('*').order('created_at', { ascending: false });
+    if (isMissingBotSessionTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotSession);
+  }
+
+  if (path === '/api/me/bot-sessions' && method === 'POST') {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) throw new Error('Login required.');
+    const selectedPackage = botPackages.find((item) => item.id === body.packageId);
+    if (!selectedPackage) throw new Error('Select a valid bot package.');
+    const { data, error } = await supabase.from('bot_sessions').insert({
+      user_id: userData.user.id,
+      package_id: selectedPackage.id,
+      package_name: selectedPackage.name,
+      trading_pair: body.tradingPair || 'XAU/USD',
+      trade_amount: body.tradeAmount,
+      duration_minutes: body.durationMinutes,
+      passkey: body.passkey,
+      status: 'pending'
+    }).select().single();
+    if (isMissingBotSessionTable(error)) throw new Error('Bot console storage is not ready yet. Apply the Supabase schema update for public.bot_sessions, then try again.');
+    if (error) throw error;
+    return mapBotSession(data);
+  }
+
+  const botStart = path.match(/^\/api\/me\/bot-sessions\/(.+)\/start$/);
+  if (botStart && method === 'POST') {
+    const { data, error } = await supabase.rpc('start_paper_bot_session', { p_session_id: botStart[1] });
+    if (isPaperSessionStartStateError(error)) {
+      const { data: session, error: sessionError } = await supabase
+        .from('bot_sessions')
+        .select('*')
+        .eq('id', botStart[1])
+        .maybeSingle();
+      if (sessionError) throw sessionError;
+      if (session?.status === 'active') return mapBotSession(session);
+      if (session?.status === 'pending') throw new Error('This bot session is still pending approval. Ask an admin to approve it, then start again.');
+      throw new Error('This bot session is not ready to start. Refresh the bot console and try again.');
+    }
+    if (error) throw error;
+    return mapBotSession(data);
+  }
+
+  const botComplete = path.match(/^\/api\/me\/bot-sessions\/(.+)\/complete$/);
+  if (botComplete && method === 'POST') {
+    const { data, error } = await supabase.rpc('advance_demo_bot_session', { p_session_id: botComplete[1] });
+    if (isPaperSessionCompleteStateError(error)) {
+      const { data: session, error: sessionError } = await supabase
+        .from('bot_sessions')
+        .select('*')
+        .eq('id', botComplete[1])
+        .maybeSingle();
+      if (sessionError) throw sessionError;
+      if (session) return mapBotSession(session);
+    }
+    if (error) throw error;
+    return mapBotSession(data);
+  }
+
+  const botControl = path.match(/^\/api\/me\/bot-sessions\/(.+)\/control$/);
+  if (botControl && method === 'POST') {
+    const { data, error } = await supabase.rpc('control_demo_bot_session', {
+      p_session_id: botControl[1],
+      p_action: body.action
+    });
+    if (error) throw error;
+    return mapBotSession(data);
+  }
+
+  if (path === '/api/me/bot-deposits' && method === 'GET') {
+    const { data, error } = await supabase.from('bot_deposits').select('*').order('created_at', { ascending: false });
+    if (isMissingBotDepositTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotDeposit);
+  }
+
+  if (path === '/api/me/bot-deposits' && method === 'POST') {
+    const { data: userData } = await supabase.auth.getUser();
+    if (!userData.user) throw new Error('Login required.');
+    const amountUsd = Number(body.amountUsd);
+    if (!Number.isFinite(amountUsd) || amountUsd < 150) throw new Error('Minimum bot deposit is $150.');
+    const { data, error } = await supabase.from('bot_deposits').insert({
+      user_id: userData.user.id,
+      asset: body.asset,
+      network: body.network,
+      amount_usd: amountUsd,
+      status: 'pending'
+    }).select().single();
+    if (isMissingBotDepositTable(error)) throw new Error('Bot deposit storage is not ready yet. Apply the latest Supabase schema, then try again.');
+    if (error) throw error;
+    return mapBotDeposit(data);
+  }
+
+  if (path === '/api/me/bot-withdrawals' && method === 'GET') {
+    const { data, error } = await supabase.from('bot_withdrawals').select('*').order('created_at', { ascending: false });
+    if (isMissingBotWithdrawalTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotWithdrawal);
+  }
+
+  if (path === '/api/me/bot-withdrawals' && method === 'POST') {
+    const { data, error } = await supabase.rpc('request_bot_withdrawal', {
+      p_amount_usd: Number(body.amountUsd),
+      p_asset: body.asset,
+      p_network: body.network,
+      p_wallet_address: body.walletAddress
+    });
+    if (isMissingBotWithdrawalTable(error)) throw new Error('Bot withdrawals are not enabled yet. Run supabase/enable-bot-withdrawals.sql in Supabase.');
+    if (error) throw error;
+    return mapBotWithdrawal(data);
+  }
+
   if (path === '/api/me/deposits' && method === 'POST') {
     const { data: userData } = await supabase.auth.getUser();
     if (!userData.user) throw new Error('Login required.');
@@ -265,6 +584,131 @@ async function supabaseRequest(path, options = {}) {
     const { data, error } = await supabase.from('balance_edits').select('*').order('created_at', { ascending: false }).limit(100);
     if (error) throw error;
     return data || [];
+  }
+
+  const tradeDelete = path.match(/^\/api\/admin\/trades\/(.+)$/);
+  if (tradeDelete && method === 'DELETE') {
+    const { error } = await supabase.from('trades').delete().eq('id', tradeDelete[1]);
+    if (error) throw error;
+    return { ok: true };
+  }
+
+  if (path === '/api/admin/trades') {
+    if (method === 'POST') {
+      const { data: userData } = await supabase.auth.getUser();
+      const { data, error } = await supabase.from('trades').insert({
+        investment_id: body.investmentId,
+        symbol: body.symbol || 'XAU/USD',
+        side: body.side,
+        quantity: body.quantity,
+        entry_price: body.entryPrice,
+        exit_price: body.status === 'closed' ? body.exitPrice : null,
+        status: body.status,
+        price_source: body.priceSource || 'operator_record',
+        external_trade_id: body.externalTradeId || null,
+        notes: body.notes || null,
+        opened_at: new Date(body.openedAt || Date.now()).toISOString(),
+        closed_at: body.status === 'closed' ? new Date(body.closedAt || Date.now()).toISOString() : null,
+        created_by: userData.user?.id
+      }).select().single();
+      if (error) throw error;
+      return mapTrade(data);
+    }
+    const { data, error } = await supabase.from('trades').select('*').order('opened_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map(mapTrade);
+  }
+
+  if (path === '/api/admin/bot-sessions') {
+    const { data, error } = await supabase.from('bot_sessions').select('*, profiles(full_name,email,wallet,suspended)').order('created_at', { ascending: false });
+    if (isMissingBotSessionTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotSession);
+  }
+
+  const botSessionPatch = path.match(/^\/api\/admin\/bot-sessions\/(.+)$/);
+  if (botSessionPatch && method === 'PATCH') {
+    const { data, error } = await supabase.from('bot_sessions').update({
+      status: body.status,
+      updated_at: new Date().toISOString()
+    }).eq('id', botSessionPatch[1]).select().single();
+    if (error) throw error;
+    return mapBotSession(data);
+  }
+
+  if (path === '/api/admin/bot-passkeys' && method === 'GET') {
+    const { data, error } = await supabase
+      .from('bot_passkeys')
+      .select('id,user_id,package_id,package_name,status,reusable,use_count,last_used_at,expires_at,used_at,created_at,profiles(full_name,email)')
+      .order('created_at', { ascending: false });
+    if (isMissingBotPasskeyTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotPasskey);
+  }
+
+  if (path === '/api/admin/bot-passkeys' && method === 'POST') {
+    const { data, error } = await supabase.rpc('issue_bot_test_passkey', {
+      p_expires_days: body.expiresDays
+    });
+    if (isMissingBotPasskeyTable(error)) throw new Error('Passkey storage is not ready yet. Apply the latest Supabase schema, then try again.');
+    if (error) throw error;
+    const issued = Array.isArray(data) ? data[0] : data;
+    return {
+      id: issued.passkey_id,
+      passkey: issued.passkey,
+      packageId: issued.package_id,
+      packageName: issued.package_name,
+      expiresAt: new Date(issued.expires_at).getTime()
+    };
+  }
+
+  const botPasskeyRevoke = path.match(/^\/api\/admin\/bot-passkeys\/(.+)\/revoke$/);
+  if (botPasskeyRevoke && method === 'POST') {
+    const { data, error } = await supabase.rpc('revoke_bot_passkey', { p_passkey_id: botPasskeyRevoke[1] });
+    if (error) throw error;
+    return mapBotPasskey(data);
+  }
+
+  if (path === '/api/admin/bot-deposits') {
+    const { data, error } = await supabase.from('bot_deposits').select('*, profiles(full_name,email,wallet,suspended)').order('created_at', { ascending: false });
+    if (isMissingBotDepositTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotDeposit);
+  }
+
+  const botDepositPatch = path.match(/^\/api\/admin\/bot-deposits\/(.+)$/);
+  if (botDepositPatch && method === 'PATCH') {
+    const patch = {
+      status: body.status,
+      confirmed_at: body.status === 'confirmed' ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+    const { data, error } = await supabase.from('bot_deposits').update(patch).eq('id', botDepositPatch[1]).select().single();
+    if (error) throw error;
+    return mapBotDeposit(data);
+  }
+
+  if (path === '/api/admin/bot-withdrawals') {
+    const { data, error } = await supabase.from('bot_withdrawals').select('*').order('created_at', { ascending: false });
+    if (isMissingBotWithdrawalTable(error)) return [];
+    if (error) throw error;
+    return (data || []).map(mapBotWithdrawal);
+  }
+
+  const botWithdrawalPatch = path.match(/^\/api\/admin\/bot-withdrawals\/(.+)$/);
+  if (botWithdrawalPatch && method === 'PATCH') {
+    const { data: userData } = await supabase.auth.getUser();
+    const patch = {
+      status: body.status,
+      transaction_id: body.transactionId || null,
+      admin_note: body.adminNote || null,
+      processed_by: userData.user?.id || null,
+      processed_at: ['paid', 'rejected'].includes(body.status) ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+    const { data, error } = await supabase.from('bot_withdrawals').update(patch).eq('id', botWithdrawalPatch[1]).select().single();
+    if (error) throw error;
+    return mapBotWithdrawal(data);
   }
 
   const investmentPatch = path.match(/^\/api\/admin\/investments\/(.+)$/);
@@ -392,8 +836,15 @@ function normalizeState(raw) {
     users,
     plans,
     investments,
+    trades: Array.isArray(raw?.trades) ? raw.trades.map(mapTrade) : [],
+    botSessions: Array.isArray(raw?.botSessions) ? raw.botSessions.map(mapBotSession) : [],
+    botPasskeys: Array.isArray(raw?.botPasskeys) ? raw.botPasskeys.map(mapBotPasskey) : [],
+    botDeposits: Array.isArray(raw?.botDeposits) ? raw.botDeposits.map(mapBotDeposit) : [],
+    botWithdrawals: Array.isArray(raw?.botWithdrawals) ? raw.botWithdrawals.map(mapBotWithdrawal) : [],
     addresses: { ...seedState.addresses, ...(raw?.addresses || {}) },
     balanceEdits: Array.isArray(raw?.balanceEdits) ? raw.balanceEdits : [],
+    poolWallet: { ...seedState.poolWallet, ...(raw?.poolWallet || {}) },
+    marketQuote: { ...seedState.marketQuote, ...(raw?.marketQuote || {}) },
     currentUserId: users.some((user) => user.id === raw?.currentUserId && !user.suspended) ? raw.currentUserId : null
   };
 }
@@ -402,26 +853,47 @@ function formatMoney(value) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value || 0));
 }
 
+function poolAllocations(poolValue) {
+  if (!Number.isFinite(poolValue)) return null;
+  const totalCents = Math.round(poolValue * 100);
+  const btcCents = Math.round(totalCents * 0.42);
+  const usdtCents = Math.round(totalCents * 0.33);
+  const fxCents = totalCents - btcCents - usdtCents;
+  return {
+    btc: btcCents / 100,
+    usdt: usdtCents / 100,
+    fx: fxCents / 100
+  };
+}
+
 function nowMs() {
   return Date.now();
 }
 
-function currentBalance(investment, tick = nowMs()) {
+function tradeProfit(trade, livePrice = null) {
+  if (!trade || trade.status === 'cancelled') return 0;
+  if (trade.status === 'closed') return Number(trade.realizedProfit || 0);
+  if (!Number.isFinite(livePrice)) return 0;
+  const movement = trade.side === 'buy'
+    ? livePrice - trade.entryPrice
+    : trade.entryPrice - livePrice;
+  return movement * trade.quantity;
+}
+
+function tradesForInvestment(trades, investmentId) {
+  return (trades || []).filter((trade) => trade.investmentId === investmentId);
+}
+
+function currentBalance(investment, trades = [], livePrice = null) {
   if (!investment) return 0;
   if (investment.manualBalance !== null && investment.manualBalance !== undefined) return investment.manualBalance;
-  if (!investment.startedAt || !investment.endsAt) return investment.deposit;
-  const elapsed = Math.max(0, tick - investment.startedAt);
-  const total = Math.max(1, investment.endsAt - investment.startedAt);
-  const progress = Math.min(1, elapsed / total);
-  const target = effectiveTarget(investment);
-  const span = target - investment.deposit;
-  const trend = investment.deposit + span * progress;
-  const wave = fluctuationFor(investment, progress, tick);
-  return Math.max(investment.deposit * 0.98, Math.min(target, trend + wave));
+  const profit = tradesForInvestment(trades, investment.id)
+    .reduce((sum, trade) => sum + tradeProfit(trade, livePrice), 0);
+  return Number(investment.deposit || 0) + profit;
 }
 
 function bonusRateFor(seed = '') {
-  const source = String(seed || 'Enchant');
+  const source = String(seed || 'Enchant Forex');
   const total = source.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
   return 0.038 + (total % 25) / 1000;
 }
@@ -430,48 +902,6 @@ function effectiveTarget(investment) {
   if (!investment) return 0;
   if (investment.projectedTarget) return investment.projectedTarget;
   return Math.round(investment.returnAmount * (1 + bonusRateFor(investment.planId || investment.id)));
-}
-
-function fluctuationFor(investment, progress, tick = nowMs()) {
-  if (!investment?.startedAt || progress >= 1) return 0;
-  const span = effectiveTarget(investment) - investment.deposit;
-  const seed = String(investment.id || investment.planId || '').length || 7;
-  const elapsedMinutes = Math.max(0, (tick - investment.startedAt) / 60000);
-  const primary = Math.sin(elapsedMinutes / 3.2 + seed) * span * 0.018;
-  const secondary = Math.sin(elapsedMinutes / 0.9 + seed * 0.7) * span * 0.007;
-  const endDampener = Math.max(0, 1 - progress);
-  const startDampener = Math.min(1, progress * 8);
-  return (primary + secondary) * endDampener * startDampener;
-}
-
-function projectedBalanceAt(investment, ratio) {
-  if (!investment) return 0;
-  const target = effectiveTarget(investment);
-  const span = target - investment.deposit;
-  const wave = Math.sin(ratio * Math.PI * 5 + String(investment.id || '').length) * span * 0.018 * (1 - ratio);
-  return Math.max(investment.deposit * 0.98, Math.min(target, investment.deposit + span * ratio + wave));
-}
-
-function priceTicksFor(investment, tick = nowMs(), count = 36) {
-  if (!investment?.startedAt || !investment?.endsAt) return [];
-  const start = investment.startedAt;
-  const end = investment.endsAt;
-  const duration = Math.max(1, end - start);
-  const latest = Math.min(tick, end);
-  const elapsed = Math.max(1000, latest - start);
-  const visibleWindow = Math.min(duration, elapsed, 90 * 60 * 1000);
-  const windowStart = Math.max(start, latest - visibleWindow);
-  const step = visibleWindow / Math.max(1, count - 1);
-  return Array.from({ length: count }, (_, index) => {
-    const sampleTime = Math.min(latest, windowStart + step * index);
-    const ratio = Math.min(1, Math.max(0, (sampleTime - start) / duration));
-    const base = investment.deposit + (effectiveTarget(investment) - investment.deposit) * ratio;
-    const wave = fluctuationFor(investment, ratio, sampleTime);
-    return {
-      time: sampleTime,
-      value: Math.max(investment.deposit * 0.98, Math.min(effectiveTarget(investment), base + wave))
-    };
-  });
 }
 
 function progressPct(investment, tick = nowMs()) {
@@ -507,7 +937,7 @@ function App() {
     let mounted = true;
 
     async function boot() {
-      await refreshPublicData();
+      await Promise.all([refreshPublicData(), refreshPoolWallet(), refreshGoldPrice()]);
       if (supabase) {
         await hydrateSession({ initial: true });
       } else {
@@ -527,7 +957,7 @@ function App() {
         if (event === 'SIGNED_OUT') {
           localStorage.removeItem(AUTH_TOKEN_KEY);
           localStorage.removeItem(AUTH_USER_KEY);
-          setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+          setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [], trades: [], botSessions: [], botPasskeys: [], botDeposits: [], botWithdrawals: [] }));
           setPage('home');
         }
       });
@@ -543,6 +973,41 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const timer = setInterval(refreshPoolWallet, 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(refreshGoldPrice, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return undefined;
+
+    const refreshAccount = () => {
+      if (currentUser.role === 'admin') refreshAdminData().catch(() => {});
+      else refreshUserData(currentUser).catch(() => {});
+    };
+
+    if (supabase) {
+      const channel = supabase
+        .channel(`trade-ledger-${currentUser.id}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'trades' }, refreshAccount)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'bot_sessions' }, refreshAccount)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'bot_deposits' }, refreshAccount)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'bot_withdrawals' }, refreshAccount)
+        .subscribe();
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+
+    const timer = setInterval(refreshAccount, 30000);
+    return () => clearInterval(timer);
+  }, [currentUser?.id, currentUser?.role]);
+
+  useEffect(() => {
     const maturedIds = state.investments
       .filter((item) => item.status === 'active' && progressPct(item, tick) >= 100)
       .map((item) => item.id);
@@ -550,7 +1015,7 @@ function App() {
       setState((prev) => ({
         ...prev,
         investments: prev.investments.map((item) =>
-          maturedIds.includes(item.id) ? { ...item, status: 'matured', manualBalance: effectiveTarget(item) } : item
+          maturedIds.includes(item.id) ? { ...item, status: 'matured' } : item
         )
       }));
     }
@@ -578,6 +1043,38 @@ function App() {
     }
   }
 
+  async function refreshPoolWallet() {
+    try {
+      const poolWallet = await fetchPoolWallet();
+      setState((prev) => ({ ...prev, poolWallet }));
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        poolWallet: {
+          ...prev.poolWallet,
+          status: prev.poolWallet.balance === null ? 'unavailable' : 'stale',
+          error: error.message
+        }
+      }));
+    }
+  }
+
+  async function refreshGoldPrice() {
+    try {
+      const marketQuote = await fetchGoldPrice();
+      setState((prev) => ({ ...prev, marketQuote }));
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        marketQuote: {
+          ...prev.marketQuote,
+          status: prev.marketQuote.price === null ? 'unavailable' : 'stale',
+          error: error.message
+        }
+      }));
+    }
+  }
+
   async function hydrateSession(options = {}) {
     try {
       if (supabase) {
@@ -586,7 +1083,7 @@ function App() {
         if (!data.session) {
           localStorage.removeItem(AUTH_TOKEN_KEY);
           localStorage.removeItem(AUTH_USER_KEY);
-          setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+          setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [], trades: [], botSessions: [], botPasskeys: [], botDeposits: [], botWithdrawals: [] }));
           return;
         }
         localStorage.setItem(AUTH_TOKEN_KEY, data.session.access_token || '');
@@ -603,28 +1100,43 @@ function App() {
     } catch (error) {
       localStorage.removeItem(AUTH_TOKEN_KEY);
       localStorage.removeItem(AUTH_USER_KEY);
-      setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+      setState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [], trades: [], botSessions: [], botPasskeys: [], botDeposits: [], botWithdrawals: [] }));
       if (!options.initial) setAppError(error.message || 'Unable to restore your session.');
     }
   }
 
   async function refreshUserData(user = currentUser) {
     if (!user) return;
-    const investments = await apiRequest('/api/me/investments');
+    const [investments, trades, botSessions, botDeposits, botWithdrawals] = await Promise.all([
+      apiRequest('/api/me/investments'),
+      apiRequest('/api/me/trades'),
+      apiRequest('/api/me/bot-sessions'),
+      apiRequest('/api/me/bot-deposits'),
+      apiRequest('/api/me/bot-withdrawals')
+    ]);
     setState((prev) => ({
       ...prev,
       users: [user],
       currentUserId: user.id,
-      investments: investments.map(mapInvestment)
+      investments: investments.map(mapInvestment),
+      trades: trades.map(mapTrade),
+      botSessions: botSessions.map(mapBotSession),
+      botDeposits: botDeposits.map(mapBotDeposit),
+      botWithdrawals: botWithdrawals.map(mapBotWithdrawal)
     }));
   }
 
   async function refreshAdminData() {
-    const [investments, users, bootstrap, balanceEdits] = await Promise.all([
+    const [investments, users, bootstrap, balanceEdits, trades, botSessions, botPasskeys, botDeposits, botWithdrawals] = await Promise.all([
       apiRequest('/api/admin/investments'),
       apiRequest('/api/admin/users'),
       apiRequest('/api/bootstrap'),
-      apiRequest('/api/admin/balance-edits')
+      apiRequest('/api/admin/balance-edits'),
+      apiRequest('/api/admin/trades'),
+      apiRequest('/api/admin/bot-sessions'),
+      apiRequest('/api/admin/bot-passkeys'),
+      apiRequest('/api/admin/bot-deposits'),
+      apiRequest('/api/admin/bot-withdrawals')
     ]);
     setState((prev) => ({
       ...prev,
@@ -632,6 +1144,11 @@ function App() {
       plans: (bootstrap.plans || []).map(mapPlan),
       addresses: bootstrap.addresses || prev.addresses,
       investments: investments.map(mapInvestment),
+      trades: trades.map(mapTrade),
+      botSessions: botSessions.map(mapBotSession),
+      botPasskeys: botPasskeys.map(mapBotPasskey),
+      botDeposits: botDeposits.map(mapBotDeposit),
+      botWithdrawals: botWithdrawals.map(mapBotWithdrawal),
       balanceEdits: (balanceEdits || []).map(mapBalanceEdit)
     }));
   }
@@ -659,11 +1176,43 @@ function App() {
 
   const liveActions = {
     refreshPublicData,
+    refreshPoolWallet,
+    refreshGoldPrice,
     refreshUserData,
     refreshAdminData,
     createDeposit: async (planId) => {
       await apiRequest('/api/me/deposits', { method: 'POST', body: { planId } });
       await refreshUserData();
+    },
+    createBotSession: async (session) => {
+      await apiRequest('/api/me/bot-sessions', { method: 'POST', body: session });
+      await refreshUserData();
+    },
+    startBotSession: async (id) => {
+      await apiRequest(`/api/me/bot-sessions/${id}/start`, { method: 'POST' });
+      await refreshUserData();
+    },
+    advanceBotSession: async (id) => {
+      try {
+        await apiRequest(`/api/me/bot-sessions/${id}/complete`, { method: 'POST' });
+      } catch (error) {
+        if (!isPaperSessionCompleteStateError(error)) throw error;
+      }
+      await refreshUserData();
+    },
+    controlBotSession: async (id, action) => {
+      await apiRequest(`/api/me/bot-sessions/${id}/control`, { method: 'POST', body: { action } });
+      await refreshUserData();
+    },
+    createBotDeposit: async (deposit) => {
+      const created = await apiRequest('/api/me/bot-deposits', { method: 'POST', body: deposit });
+      await refreshUserData();
+      return mapBotDeposit(created);
+    },
+    createBotWithdrawal: async (withdrawal) => {
+      const created = await apiRequest('/api/me/bot-withdrawals', { method: 'POST', body: withdrawal });
+      await refreshUserData();
+      return mapBotWithdrawal(created);
     },
     claimWithdrawal: async (investmentId, step) => {
       const path = step === 2 ? `/api/me/investments/${investmentId}/claim-tax` : `/api/me/investments/${investmentId}/claim-withdrawal-fee`;
@@ -672,6 +1221,35 @@ function App() {
     },
     patchInvestment: async (id, patch) => {
       await apiRequest(`/api/admin/investments/${id}`, { method: 'PATCH', body: patch });
+      await refreshAdminData();
+    },
+    createTrade: async (trade) => {
+      await apiRequest('/api/admin/trades', { method: 'POST', body: trade });
+      await refreshAdminData();
+    },
+    deleteTrade: async (id) => {
+      await apiRequest(`/api/admin/trades/${id}`, { method: 'DELETE' });
+      await refreshAdminData();
+    },
+    patchBotSession: async (id, patch) => {
+      await apiRequest(`/api/admin/bot-sessions/${id}`, { method: 'PATCH', body: patch });
+      await refreshAdminData();
+    },
+    issueBotPasskey: async (passkey) => {
+      const issued = await apiRequest('/api/admin/bot-passkeys', { method: 'POST', body: passkey });
+      await refreshAdminData();
+      return issued;
+    },
+    revokeBotPasskey: async (id) => {
+      await apiRequest(`/api/admin/bot-passkeys/${id}/revoke`, { method: 'POST' });
+      await refreshAdminData();
+    },
+    patchBotDeposit: async (id, patch) => {
+      await apiRequest(`/api/admin/bot-deposits/${id}`, { method: 'PATCH', body: patch });
+      await refreshAdminData();
+    },
+    patchBotWithdrawal: async (id, patch) => {
+      await apiRequest(`/api/admin/bot-withdrawals/${id}`, { method: 'PATCH', body: patch });
       await refreshAdminData();
     },
     patchUser: async (id, patch) => {
@@ -696,7 +1274,7 @@ function App() {
     if (supabase) await supabase.auth.signOut();
     localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem(AUTH_USER_KEY);
-    updateState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [] }));
+    updateState((prev) => ({ ...prev, users: [], currentUserId: null, investments: [], trades: [], botSessions: [], botPasskeys: [], botDeposits: [], botWithdrawals: [] }));
     setPage('home');
   }
 
@@ -713,9 +1291,13 @@ function App() {
       {page === 'dashboard' && (
         <UserDashboard state={state} actions={liveActions} user={currentUser} tick={tick} setPage={setPage} flash={flash} />
       )}
+      {page === 'bot' && (
+        <BotConsole state={state} actions={liveActions} user={currentUser} tick={tick} setPage={setPage} flash={flash} />
+      )}
       {page === 'admin' && (
         <AdminPanel state={state} actions={liveActions} user={currentUser} tick={tick} setPage={setPage} flash={flash} />
       )}
+      <GlobalFooter state={state} currentUser={currentUser} setPage={setPage} />
       {toast && <div className="toast">{toast}</div>}
     </>
   );
@@ -727,17 +1309,15 @@ function Header({ currentUser, page, setPage, logout }) {
     ['home', 'Plans'],
     ['strategies', 'Strategies'],
     ['feedback', 'Feedback'],
+    ['bot', 'Bot Console'],
     [currentUser?.role === 'admin' ? 'admin' : 'dashboard', currentUser ? 'Dashboard' : 'Login']
   ];
   return (
     <header className="site-header">
       <button className="brand" onClick={() => setPage('home')} aria-label="Enchant Forex home">
-        <span className="brand-mark"><img src="/logo.svg" alt="" /></span>
+        <span className="brand-mark"><img src="/enchant-forex-logo.png" alt="Enchant Forex logo" /></span>
         <span>Enchant Forex</span>
       </button>
-      <div className="desktop-status">
-        <span /> Live desk online
-      </div>
       <button className="icon-button mobile-only" onClick={() => setOpen(!open)} aria-label="Open navigation">
         <Menu size={20} />
       </button>
@@ -753,6 +1333,9 @@ function Header({ currentUser, page, setPage, logout }) {
           <button className="gold" onClick={() => setPage('auth')}><UserPlus size={16} /> Register</button>
         )}
       </nav>
+      <div className="desktop-status">
+        <span /> Live desk online
+      </div>
     </header>
   );
 }
@@ -762,6 +1345,9 @@ function Landing({ state, setPage, tick }) {
   const deposits = 128400 + state.investments.reduce((sum, i) => sum + i.deposit, 0) + Math.floor((tick / 1000) % 300);
   const withdrawals = 38420 + state.investments.filter((i) => i.status === 'withdrawn').length * 1700 + Math.floor((tick / 1400) % 120);
   const featuredPlans = state.plans.slice(0, 5);
+  const poolWallet = state.poolWallet;
+  const poolValue = poolWallet.balance;
+  const allocations = poolAllocations(poolValue);
 
   return (
     <main>
@@ -770,37 +1356,37 @@ function Landing({ state, setPage, tick }) {
         <div className="hero-bg" />
         <div className="hero-grid">
           <div className="hero-content">
-            <p className="eyebrow"><Sparkles size={16} /> Private forex and crypto pool suite</p>
+            <p className="eyebrow"><Landmark size={16} /> Private capital operations</p>
             <h1>Enchant Forex</h1>
-            <p className="hero-copy">Join Our Trading Plans Today and Have Peace of Mind</p>
-            <p className="hero-subcopy">A polished member portal for deposits, approval, realtime tracking, withdrawal, confirmation, and funds release.</p>
+            <p className="hero-copy">A clear path from allocation to release.</p>
+            <p className="hero-subcopy">One private workspace for plan funding, live account visibility, transaction records, and digital asset settlement.</p>
             <div className="hero-actions">
               <button className="primary" onClick={() => setPage('auth')}>Register <ChevronRight size={18} /></button>
               <button className="secondary" onClick={() => setPage('auth')}>Login</button>
             </div>
             <div className="hero-badges">
-              <span><ShieldCheck size={16} /> Automated verification flow</span>
-              <span><Radio size={16} /> Realtime account growth</span>
-              <span><Wallet size={16} /> Crypto withdrawal flow</span>
+              <span><ShieldCheck size={16} /> Structured verification</span>
+              <span><Radio size={16} /> Live account tracking</span>
+              <span><Wallet size={16} /> Digital asset settlement</span>
             </div>
           </div>
           <div className="terminal-card" aria-label="Trading suite preview">
             <div className="terminal-top">
-              <span><Radio size={16} /> Live Pool Monitor</span>
-              <b>ONLINE</b>
+              <span><Radio size={16} /> Enchant Forex Ledger</span>
+              <b>LIVE</b>
             </div>
             <div className="terminal-lens">
               <div>
-                <small>Enchant FX Index</small>
-                <strong>DES-24</strong>
+                <small>Portfolio desk</small>
+                <strong>DC-24</strong>
               </div>
               <div>
-                <small>Session Yield</small>
+                <small>Current cycle</small>
                 <strong>+18.7%</strong>
               </div>
               <div>
-                <small>Clearance</small>
-                <strong>Auto</strong>
+                <small>Ledger status</small>
+                <strong>Balanced</strong>
               </div>
             </div>
             <div className="chart-bars">
@@ -808,16 +1394,25 @@ function Landing({ state, setPage, tick }) {
             </div>
             <div className="orderbook">
               {[
-                ['BTC Pool', '+2.41%', '$47,500'],
-                ['USDT Desk', '+1.88%', '$19,000'],
-                ['FX Alpha', '+3.12%', '$95,000']
+                ['BTC Pool', '+2.41%', allocations ? formatMoney(allocations.btc) : 'Syncing...'],
+                ['USDT Desk', '+1.88%', allocations ? formatMoney(allocations.usdt) : 'Syncing...'],
+                ['FX Alpha', '+3.12%', allocations ? formatMoney(allocations.fx) : 'Syncing...']
               ].map(([name, move, value]) => <p key={name}><span>{name}</span><b>{move}</b><strong>{value}</strong></p>)}
             </div>
             <div className="terminal-grid">
-              <div><small>Pool Value</small><strong>{formatMoney(deposits + withdrawals)}</strong></div>
+              <div className="pool-value-cell">
+                <small>On-chain Pool Value</small>
+                <strong>{poolValue === null ? 'Syncing...' : formatMoney(poolValue)}</strong>
+                <span className={`pool-status ${poolWallet.status}`}>{poolWallet.status}</span>
+              </div>
               <div><small>Active Plans</small><strong>{featuredPlans.length}</strong></div>
               <div><small>Avg Duration</small><strong>24-48h</strong></div>
-              <div><small>Flow</small><strong>6 Stages</strong></div>
+              <div><small>Oversight</small><strong>End to End</strong></div>
+            </div>
+            <div className="pool-wallet-link pool-sync-line">
+              <Radio size={15} />
+              <span>TRON reserve monitor</span>
+              <small>{poolWallet.updatedAt ? `Synced ${new Date(poolWallet.updatedAt).toLocaleTimeString()}` : 'Connecting to TRON'}</small>
             </div>
             <div className="signal-list">
               <p><span /> Deposit verification queue synced</p>
@@ -830,19 +1425,19 @@ function Landing({ state, setPage, tick }) {
 
       <section className="ticker-band">
         <Stat label="Active members" value={1287 + active} icon={<Users />} />
-        <Stat label="Ongoing deposits" value={formatMoney(deposits)} icon={<TrendingUp />} />
+        <Stat label="Live pool reserves" value={poolValue === null ? 'Syncing...' : formatMoney(poolValue)} icon={<TrendingUp />} />
         <Stat label="Ongoing withdrawals" value={formatMoney(withdrawals)} icon={<Banknote />} />
       </section>
 
       <section className="trust-strip">
         <div><Landmark size={20} /><strong>Structured Verification</strong><span>Every deposit, withdrawal request, and funds release follows a simple automated path.</span></div>
         <div><BarChart3 size={20} /><strong>Realtime Growth Engine</strong><span>Verified plans move through live market-style account figures with dashboard progress.</span></div>
-        <div><Globe2 size={20} /><strong>Community Channels</strong><span>Telegram and WhatsApp contact routes are surfaced across the platform.</span></div>
+        <div><Globe2 size={20} /><strong>Community Channel</strong><span>Telegram support is surfaced across the platform for direct member contact.</span></div>
       </section>
 
       <section className="section prestige-section">
         <div className="prestige-copy">
-          <p className="eyebrow"><Crown size={16} /> Enchant private desk</p>
+          <p className="eyebrow"><Crown size={16} /> Enchant Forex private desk</p>
           <h2>A full investment community interface with the gravity of a financial command room.</h2>
           <p>Members see a clean journey from registration to final release, with live account figures, wallet routing, and payout completion surfaced in one place.</p>
         </div>
@@ -853,7 +1448,7 @@ function Landing({ state, setPage, tick }) {
           <div className="prestige-stats">
             <div><small>24 Hour Desk</small><strong>{formatMoney(4750)}</strong><span>Target from $500</span></div>
             <div><small>48 Hour Desk</small><strong>{formatMoney(95000)}</strong><span>Target from $10,000</span></div>
-            <div><small>Release Flow</small><strong>6 Stages</strong><span>System verified</span></div>
+            <div><small>Account Oversight</small><strong>Continuous</strong><span>System verified</span></div>
           </div>
         </div>
       </section>
@@ -870,24 +1465,45 @@ function Landing({ state, setPage, tick }) {
 
       <PlanGrowthDesk plans={state.plans} setPage={setPage} />
 
+      <section className="section capital-visual-story">
+        <div className="visual-story-copy">
+          <p className="eyebrow"><Landmark size={16} /> The Enchant Forex environment</p>
+          <h2>Built to feel considered at every point of the capital journey.</h2>
+          <p>Research, account oversight, and member communication come together in a private workspace designed for calm, informed decisions.</p>
+        </div>
+        <div className="visual-story-grid">
+          <figure className="visual-story-primary">
+            <img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=1400&q=85" alt="Modern private investment office" />
+            <figcaption>Private capital workspace</figcaption>
+          </figure>
+          <figure>
+            <img src="https://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=900&q=85" alt="Investment professionals reviewing market information" />
+            <figcaption>Research and review</figcaption>
+          </figure>
+          <figure>
+            <img src="https://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=900&q=85" alt="Financial team meeting around a table" />
+            <figcaption>Member support desk</figcaption>
+          </figure>
+        </div>
+      </section>
+
       <section className="section split-showcase">
         <div className="showcase-copy">
           <p className="eyebrow"><Zap size={16} /> Platform intelligence</p>
-          <h2>Designed around the full investor journey, not just a signup form.</h2>
-          <p>Enchant Forex presents plans, tracks approval, updates balances, opens withdrawal, confirms release, and guides each stage with clarity.</p>
+          <h2>Designed for active account oversight, not just registration.</h2>
+          <p>Enchant Forex brings plan details, account movement, wallet routing, records, and support into one focused member workspace.</p>
           <button className="primary" onClick={() => setPage('auth')}>Open Your Dashboard</button>
         </div>
         <div className="feature-showcase">
           <img src="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80" alt="Financial dashboard analytics workstation" />
           <div className="feature-matrix">
             {[
-              ['Deposit', 'Submit your selected plan and amount'],
-              ['Approval', 'System approval starts the account timer'],
-              ['Tracking', 'Realtime figures update in the dashboard'],
-              ['Withdrawal', 'The withdrawal button opens at maturity'],
-              ['Confirmation', 'Withdrawal confirmation moves the request forward'],
-              ['Funds release', 'The release engine marks funds released'],
-              ['Activity record', 'Stage history is organized for review']
+              ['Plan selection', 'Compare deposits, targets, and cycle durations'],
+              ['Live visibility', 'Follow account movement from one dashboard'],
+              ['Wallet routing', 'Access the relevant digital asset addresses'],
+              ['Activity record', 'Review account events and transaction history'],
+              ['Status alerts', 'See when account actions become available'],
+              ['Member support', 'Reach direct community support channels']
             ].map(([title, detail]) => (
               <div key={title}>
                 <Check size={17} />
@@ -936,6 +1552,20 @@ function Landing({ state, setPage, tick }) {
           <p className="eyebrow"><Scale size={16} /> Governance architecture</p>
           <h2>Six simple stages from deposit to funds release.</h2>
         </div>
+        <div className="governance-media">
+          <img src="https://images.unsplash.com/photo-1774600134168-b9ebd714e4e1?auto=format&fit=crop&w=1800&q=85" alt="Professional team collaborating in a bright modern office" />
+          <div className="governance-summary">
+            <p>
+              <span>Workflow control</span>
+              <strong>From deposit request to completed release.</strong>
+            </p>
+            <dl>
+              <div><dt>6</dt><dd>Visible stages</dd></div>
+              <div><dt>Live</dt><dd>Status tracking</dd></div>
+              <div><dt>Full</dt><dd>Transaction history</dd></div>
+            </dl>
+          </div>
+        </div>
         <div className="architecture-grid">
           {[
             ['Deposit', 'Choose a plan and submit the deposit request from the member dashboard.'],
@@ -975,6 +1605,7 @@ function Landing({ state, setPage, tick }) {
             </div>
           </div>
           <div className="cockpit-side">
+            <img className="cockpit-image" src="https://images.unsplash.com/photo-1556761175-4b46a572b786?auto=format&fit=crop&w=900&q=85" alt="Member reviewing account information with an advisor" />
             {[
               ['Deposit', 'Submitted and queued'],
               ['Approval', 'Timer ignition point'],
@@ -994,21 +1625,6 @@ function Landing({ state, setPage, tick }) {
           <article><strong>Private Member Flow</strong><p>Every screen focuses on the next action, the current status, and the value being tracked.</p></article>
           <article><strong>Automated Visibility</strong><p>Members can see requests, account movement, plan progress, and wallet routing when each stage opens.</p></article>
           <article><strong>Realtime Monitoring</strong><p>Account counters, progress rails, and live market details keep the platform current.</p></article>
-        </div>
-      </section>
-
-      <section className="section steps-section">
-        <div className="section-title">
-          <p className="eyebrow">How it works</p>
-          <h2>Six stages from deposit to funds release.</h2>
-        </div>
-        <div className="steps">
-          {['Deposit', 'Approval', 'Tracking', 'Withdrawal', 'Withdrawal Confirmation', 'Funds Release'].map((text, index) => (
-            <div className="step" key={text}>
-              <span>{index + 1}</span>
-              <p>{text}</p>
-            </div>
-          ))}
         </div>
       </section>
 
@@ -1035,19 +1651,58 @@ function Landing({ state, setPage, tick }) {
         </div>
         <img src="https://images.unsplash.com/photo-1557804506-669a67965ba0?auto=format&fit=crop&w=1000&q=80" alt="Professional client support and communication team" />
         <div className="support-actions">
-          <a href="https://t.me/Sir_Zahoor"><MessageCircle size={18} /> Telegram</a>
-          <a href="https://wa.me/17022187068"><Smartphone size={18} /> WhatsApp</a>
+          <a href="https://t.me/enchantforex" target="_blank" rel="noreferrer"><MessageCircle size={18} /> Telegram</a>
         </div>
       </section>
 
-      <footer className="footer">
-        <div>
-          <strong>Enchant Forex</strong>
-          <p>Community: <a href="https://t.me/Sir_Zahoor">Telegram</a> / <a href="https://wa.me/17022187068">WhatsApp</a></p>
-        </div>
-        <p>Accepted: Bitcoin, USDT, Skrill</p>
-      </footer>
     </main>
+  );
+}
+
+function GlobalFooter({ state, currentUser, setPage }) {
+  const poolWallet = state.poolWallet;
+  const poolValue = poolWallet.balance;
+  const destination = currentUser?.role === 'admin' ? 'admin' : currentUser ? 'dashboard' : 'auth';
+  function navigate(target) {
+    setPage(target);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  return (
+    <footer className="global-footer">
+      <div className="footer-main">
+        <div className="footer-brand">
+          <button onClick={() => navigate('home')} aria-label="Enchant Forex home">
+            <img src="/enchant-forex-logo.png" alt="Enchant Forex logo" />
+            <span>Enchant Forex</span>
+          </button>
+          <p>Private capital operations with live reserve visibility.</p>
+        </div>
+
+        <div className="footer-links">
+          <button onClick={() => navigate('home')}>Plans</button>
+          <button onClick={() => navigate('strategies')}>Strategies</button>
+          <button onClick={() => navigate('feedback')}>Feedback</button>
+          <button onClick={() => navigate(destination)}>{currentUser ? 'Workspace' : 'Member Access'}</button>
+          <a href="https://t.me/enchantforex" target="_blank" rel="noreferrer"><MessageCircle size={15} /> Telegram</a>
+        </div>
+
+        <div className="footer-reserve">
+          <div className="footer-reserve-head">
+            <span><Radio size={14} /> Reserve Monitor</span>
+            <b className={poolWallet.status}>{poolWallet.status}</b>
+          </div>
+          <strong>{poolValue === null ? 'Connecting...' : formatMoney(poolValue)}</strong>
+          <small>{poolWallet.updatedAt ? `USDT · synced ${new Date(poolWallet.updatedAt).toLocaleTimeString()}` : 'On-chain USDT pool'}</small>
+        </div>
+      </div>
+
+      <div className="footer-bottom">
+        <p>© {new Date().getFullYear()} Enchant Forex. All rights reserved.</p>
+        <p>Digital assets involve risk. Review all terms before proceeding.</p>
+        <span><ShieldCheck size={14} /> Read-only reserve data</span>
+      </div>
+    </footer>
   );
 }
 
@@ -1076,7 +1731,7 @@ function StrategyPage({ setPage }) {
       <section className="strategy-hero">
         <div>
           <p className="eyebrow"><BarChart3 size={16} /> Trading strategy</p>
-          <h1>How Enchant Structures Market Opportunity</h1>
+          <h1>How Enchant Forex Structures Market Opportunity</h1>
           <p>Enchant Forex is presented around disciplined market selection, live balance tracking, staged verification, and risk-managed forex and crypto exposure.</p>
           <button className="primary" onClick={() => setPage('auth')}>Enter Member Dashboard</button>
         </div>
@@ -1088,13 +1743,18 @@ function StrategyPage({ setPage }) {
         </div>
         <div className="strategy-media">
           <img src="https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1400&q=80" alt="Professional trading strategy review meeting" />
-          <div>
+          <div className="strategy-review-card">
             <strong>Structured market review</strong>
             <p>Plan cycles are presented around market timing, liquidity review, balance monitoring, and disciplined release stages.</p>
           </div>
         </div>
         <div className="strategy-grid">
           {strategyBlocks.map(([title, body]) => <article key={title}><TrendingUp size={20} /><h3>{title}</h3><p>{body}</p></article>)}
+        </div>
+        <div className="strategy-image-strip">
+          <img src="https://images.unsplash.com/photo-1559526324-4b87b5e36e44?auto=format&fit=crop&w=900&q=85" alt="Market charts displayed on a professional workstation" />
+          <img src="https://images.unsplash.com/photo-1535320903710-d993d3d77d29?auto=format&fit=crop&w=900&q=85" alt="Financial market data and trading charts" />
+          <img src="https://images.unsplash.com/photo-1556761175-5973dc0f32e7?auto=format&fit=crop&w=900&q=85" alt="Team discussing a financial strategy" />
         </div>
       </section>
       <section className="section risk-section">
@@ -1103,7 +1763,7 @@ function StrategyPage({ setPage }) {
           <h2>Guidelines used to keep the process structured.</h2>
         </div>
         <div className="risk-media">
-          <div>
+          <div className="risk-review-card">
             <strong>Risk review before growth</strong>
             <p>The strategy page emphasizes measured exposure, defined invalidation, and review cycles before aggressive account movement.</p>
           </div>
@@ -1113,10 +1773,12 @@ function StrategyPage({ setPage }) {
           {riskRules.map(([title, body], index) => <article key={title}><span>{String(index + 1).padStart(2, '0')}</span><strong>{title}</strong><p>{body}</p></article>)}
         </div>
       </section>
-      <section className="section disclosure-section">
-        <p className="eyebrow"><Scale size={16} /> Market note</p>
-        <h2>Trading involves market risk.</h2>
-        <p>Forex and crypto markets can move quickly. The dashboard is designed to present account activity clearly, while market conditions, volatility, liquidity, and timing can affect outcomes.</p>
+      <section className="section disclosure-wrap">
+        <div className="disclosure-section">
+          <p className="eyebrow"><Scale size={16} /> Market note</p>
+          <h2>Trading involves market risk.</h2>
+          <p>Forex and crypto markets can move quickly. The dashboard is designed to present account activity clearly, while market conditions, volatility, liquidity, and timing can affect outcomes.</p>
+        </div>
       </section>
     </main>
   );
@@ -1188,6 +1850,20 @@ function FeedbackPage({ setPage }) {
           <div><small>Common Theme</small><strong>Clear Stages</strong><span>Deposit to funds release is easy to follow.</span></div>
           <div><small>Dashboard Focus</small><strong>Live Balance</strong><span>Members value visible account movement.</span></div>
           <div><small>Process Style</small><strong>Structured</strong><span>Each action appears at the right time.</span></div>
+        </div>
+        <div className="feedback-photo-band">
+          <figure>
+            <img src="https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1000&q=85" alt="Welcoming Enchant Forex member workspace" />
+            <figcaption>Private workspace</figcaption>
+          </figure>
+          <figure>
+            <img src="https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=1000&q=85" alt="Client support team collaborating" />
+            <figcaption>Responsive support</figcaption>
+          </figure>
+          <figure>
+            <img src="https://images.unsplash.com/photo-1556761175-5973dc0f32e7?auto=format&fit=crop&w=1000&q=85" alt="Financial professionals discussing client accounts" />
+            <figcaption>Account review</figcaption>
+          </figure>
         </div>
       </section>
 
@@ -1342,15 +2018,20 @@ function Auth({ onAuth, flash }) {
 
   return (
     <main className="auth-shell">
-      <section className="auth-panel">
+      <section className={`auth-panel auth-${mode}`}>
         <div className="auth-brand-panel">
-          <p className="eyebrow"><Crown size={16} /> Enchant access</p>
-          <h1>Enter the private forex suite.</h1>
-          <p>Register your member profile, secure your wallet details, and move into the investment dashboard for plan selection and status tracking.</p>
+          <p className="eyebrow"><Crown size={16} /> {mode === 'register' ? 'Private membership' : 'Enchant Forex access'}</p>
+          <h1>{mode === 'register' ? 'Begin your Enchant Forex membership.' : 'Return to your private capital workspace.'}</h1>
+          <p>{mode === 'register' ? 'Create your member profile, record your settlement wallet, and enter a structured workspace for plan selection and account tracking.' : 'Sign in to review your active plan, live account movement, transaction history, and withdrawal progress.'}</p>
           <div className="auth-proof">
             <span><ShieldCheck size={16} /> Role-based access</span>
             <span><Wallet size={16} /> Wallet profile</span>
             <span><Clock3 size={16} /> Timed growth cycles</span>
+          </div>
+          <div className="auth-brand-stats">
+            <div><small>Access</small><strong>Private</strong></div>
+            <div><small>Tracking</small><strong>Live</strong></div>
+            <div><small>Process</small><strong>Guided</strong></div>
           </div>
         </div>
         <div className="auth-form-panel">
@@ -1419,8 +2100,10 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
   const [selectedPlan, setSelectedPlan] = useState(state.plans[0]?.id || '');
   const [showWithdrawal, setShowWithdrawal] = useState(false);
   const investments = state.investments.filter((i) => i.userId === user?.id);
-  const activeInvestment = investments[investments.length - 1];
-  const balance = currentBalance(activeInvestment, tick);
+  const activeInvestment = investments[0];
+  const activeTrades = tradesForInvestment(state.trades, activeInvestment?.id);
+  const liveGoldPrice = state.marketQuote.price;
+  const balance = currentBalance(activeInvestment, state.trades, liveGoldPrice);
   const planStatus = statusText(activeInvestment, tick);
   const targetBalance = effectiveTarget(activeInvestment);
 
@@ -1473,6 +2156,7 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
         <Metric title="Amount deposited" value={formatMoney(activeInvestment?.deposit || 0)} icon={<Coins />} />
         <Metric title="Current balance" value={formatMoney(balance)} icon={<CircleDollarSign />} />
         <Metric title="Plan status" value={planStatus} icon={<ShieldCheck />} />
+        <Metric title="Live gold" value={liveGoldPrice === null ? 'Unavailable' : formatMoney(liveGoldPrice)} icon={<TrendingUp />} />
       </section>
 
       <DepositCenter plans={state.plans} addresses={state.addresses} selectedPlan={depositPlanId} setSelectedPlan={setSelectedPlan} submitDeposit={submitDeposit} flash={flash} />
@@ -1492,8 +2176,32 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
       </section>
 
       <section className="dashboard-split">
-        <GrowthMilestoneChart investment={activeInvestment} tick={tick} />
+        <GrowthMilestoneChart investment={activeInvestment} trades={activeTrades} livePrice={liveGoldPrice} />
         <LiveMemberActivity tick={tick} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>Gold Trade Ledger</h2>
+            <p>Recorded executions and P&amp;L for this investment. Open-trade estimates use the displayed XAU/USD quote.</p>
+          </div>
+          <span className={`pool-status ${state.marketQuote.status}`}>{state.marketQuote.status}</span>
+        </div>
+        <DataTable
+          headers={['Opened', 'Market', 'Side', 'Quantity', 'Entry', 'Exit / Live', 'Status', 'Profit / Loss']}
+          rows={activeTrades.map((trade) => [
+            new Date(trade.openedAt).toLocaleString(),
+            trade.symbol,
+            trade.side.toUpperCase(),
+            trade.quantity,
+            formatMoney(trade.entryPrice),
+            formatMoney(trade.exitPrice ?? liveGoldPrice ?? 0),
+            trade.status,
+            formatMoney(tradeProfit(trade, liveGoldPrice))
+          ])}
+        />
+        <p className="hint">Market source: {state.marketQuote.source || 'Not configured'}{state.marketQuote.updatedAt ? `, updated ${new Date(state.marketQuote.updatedAt).toLocaleTimeString()}` : ''}.</p>
       </section>
 
       <section className="panel">
@@ -1507,6 +2215,666 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
       {showWithdrawal && activeInvestment && (
         <WithdrawalModal investment={activeInvestment} balance={balance} addresses={state.addresses} onClose={() => setShowWithdrawal(false)} onClaim={claim} />
       )}
+    </main>
+  );
+}
+
+function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
+  const [step, setStep] = useState(1);
+  const [selected, setSelected] = useState(botDepositOptions[0]);
+  const [amount, setAmount] = useState('150');
+  const [currentDeposit, setCurrentDeposit] = useState(null);
+  const [search, setSearch] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const visibleDeposits = deposits.filter((deposit) => {
+    const haystack = `${deposit.asset} ${deposit.network} ${deposit.amountUsd} ${deposit.status} ${deposit.paymentAddress}`.toLowerCase();
+    return haystack.includes(search.trim().toLowerCase());
+  });
+
+  async function generateAddress() {
+    const amountUsd = Number(amount);
+    if (!Number.isFinite(amountUsd) || amountUsd < 150) return flash('Minimum bot deposit is $150.');
+    setSubmitting(true);
+    try {
+      const deposit = await actions.createBotDeposit({
+        asset: selected.asset,
+        network: selected.network,
+        amountUsd
+      });
+      setCurrentDeposit(deposit);
+      setStep(3);
+      flash('Payment address generated.');
+    } catch (error) {
+      flash(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function copyValue(value, label) {
+    try {
+      await navigator.clipboard.writeText(value);
+      flash(`${label} copied.`);
+    } catch {
+      flash(`Unable to copy ${label.toLowerCase()}.`);
+    }
+  }
+
+  function chooseCoin(option) {
+    setSelected(option);
+  }
+
+  function startAnotherDeposit() {
+    setStep(1);
+    setAmount('150');
+    setCurrentDeposit(null);
+  }
+
+  const remainingSeconds = currentDeposit ? Math.max(0, Math.ceil((currentDeposit.expiresAt - tick) / 1000)) : 0;
+  const countdown = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
+  const paymentLabel = selected.asset === 'USDT'
+    ? `${Number(currentDeposit?.amountUsd || amount).toFixed(2)} USDT`
+    : `${formatMoney(currentDeposit?.amountUsd || amount)} worth of ${selected.asset}`;
+
+  return (
+    <section className="bot-deposit-layout">
+      <div className="panel bot-deposit-card">
+        <div className="bot-deposit-heading">
+          <span><Wallet size={22} /></span>
+          <div>
+            <h2>Deposit Crypto</h2>
+            <p>Fund your bot trading account</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close deposit panel"><X size={18} /></button>
+        </div>
+
+        <div className="deposit-steps" aria-label={`Deposit step ${step} of 3`}>
+          {[1, 2, 3].map((number) => (
+            <React.Fragment key={number}>
+              <span className={number <= step ? 'active' : ''}>{number}</span>
+              {number < 3 && <i className={number < step ? 'active' : ''} />}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {step === 1 && (
+          <div className="deposit-stage">
+            <small className="deposit-label">Select coin</small>
+            <div className="coin-grid">
+              {botDepositOptions.map((option) => (
+                <button
+                  className={selected.asset === option.asset ? 'coin-option selected' : 'coin-option'}
+                  key={option.asset}
+                  onClick={() => chooseCoin(option)}
+                >
+                  <b>{option.mark}</b>
+                  <span><strong>{option.asset}</strong><small>{option.name}</small></span>
+                </button>
+              ))}
+            </div>
+            <small className="deposit-label">Network</small>
+            <div className="network-options">
+              <button className="selected">{selected.networkName}</button>
+            </div>
+            <button className="primary full deposit-continue" onClick={() => setStep(2)}>Continue <ChevronRight size={17} /></button>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="deposit-stage">
+            <button className="deposit-selection" onClick={() => setStep(1)}>
+              <b>{selected.mark}</b>
+              <span><strong>{selected.asset} - {selected.networkName}</strong><small>Change</small></span>
+            </button>
+            <label className="input-label deposit-amount">
+              <span>Amount (USD) <em>· Minimum $150</em></span>
+              <input type="number" min="150" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} />
+            </label>
+            <div className="quick-amounts">
+              {[150, 250, 500, 1000].map((value) => <button key={value} onClick={() => setAmount(String(value))}>{formatMoney(value)}</button>)}
+            </div>
+            <div className="deposit-summary"><span>You send</span><strong>{selected.asset === 'USDT' ? `${Number(amount || 0).toFixed(2)} USDT` : `${formatMoney(Number(amount || 0))} in ${selected.asset}`}</strong></div>
+            <div className="deposit-actions">
+              <button className="secondary" onClick={() => setStep(1)}>← Back</button>
+              <button className="primary" disabled={submitting} onClick={generateAddress}>{submitting ? 'Generating…' : 'Generate Address'}</button>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && currentDeposit && (
+          <div className="deposit-stage deposit-payment">
+            <div className="monitoring-note">Monitoring your payment. Your balance can be credited after the transfer is confirmed.</div>
+            <div className={remainingSeconds ? 'deposit-expiry' : 'deposit-expiry expired'}>
+              <span><strong>{remainingSeconds ? 'Payment expires in' : 'Payment request expired'}</strong><small>Send the exact amount before time runs out</small></span>
+              <b>{countdown}</b>
+            </div>
+            <div className="deposit-qr" role="img" aria-label={`QR code for ${selected.asset} payment address`}>
+              <QRCodeSVG value={currentDeposit.paymentAddress} size={170} level="M" />
+            </div>
+            <p className="payment-instruction">Send <strong>{paymentLabel}</strong> via {selected.network}</p>
+            <div className="copy-field">
+              <small>Payment address</small>
+              <div><code>{currentDeposit.paymentAddress}</code><button onClick={() => copyValue(currentDeposit.paymentAddress, 'Payment address')}><Copy size={16} /> Copy</button></div>
+            </div>
+            <div className="copy-field">
+              <small>Amount to send</small>
+              <div><code>{paymentLabel}</code><button onClick={() => copyValue(paymentLabel, 'Amount')}><Copy size={16} /> Copy</button></div>
+            </div>
+            <button className="secondary full" onClick={startAnotherDeposit}>← Make Another Deposit</button>
+          </div>
+        )}
+      </div>
+
+      <div className="panel bot-deposit-history">
+        <div className="panel-head">
+          <h2>Deposit History</h2>
+          <button className="icon-button" onClick={() => actions.refreshUserData()} aria-label="Refresh deposit history"><RefreshCw size={17} /></button>
+        </div>
+        <label className="deposit-search">
+          <Search size={15} />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by coin, network, amount, status" />
+        </label>
+        <div className="deposit-history-list">
+          {visibleDeposits.length ? visibleDeposits.map((deposit) => {
+            const expired = deposit.status === 'pending' && deposit.expiresAt <= tick;
+            const option = botDepositOptions.find((item) => item.asset === deposit.asset);
+            return (
+              <article key={deposit.id}>
+                <b>{option?.mark || '¤'}</b>
+                <span>
+                  <strong>{formatMoney(deposit.amountUsd)} <small>({deposit.asset})</small></strong>
+                  <code>{deposit.network} · {shortAddress(deposit.paymentAddress)}</code>
+                </span>
+                <i className={`deposit-status ${expired ? 'expired' : deposit.status}`}>{expired ? 'Expired' : deposit.status}</i>
+                <time>{new Date(deposit.createdAt).toLocaleDateString()}</time>
+              </article>
+            );
+          }) : <p className="empty">No bot deposits yet.</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function shortAddress(value = '') {
+  if (value.length <= 14) return value;
+  return `${value.slice(0, 7)}…${value.slice(-5)}`;
+}
+
+function PaperBotSession({ session, tick, onStart, onControl, starting }) {
+  const remaining = session.endsAt ? Math.max(0, Math.ceil((session.endsAt - tick) / 1000)) : 0;
+  const countdown = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
+  const displayedAnalysis = session.analysis;
+  const displayedBias = session.bias;
+  const resultClass = session.realizedProfit >= 0 ? 'profit' : 'loss';
+  const analysisTerms = displayedAnalysis?.length
+    ? displayedAnalysis
+    : ['Scanning price structure', 'Measuring momentum', 'Evaluating trend alignment', 'Confirming liquidity conditions'];
+  const analysisIndex = Math.floor(Math.max(0, tick - (session.startedAt || tick)) / 3500) % analysisTerms.length;
+  const activeAnalysis = analysisTerms[analysisIndex];
+
+  return (
+    <article className={`paper-session ${session.status}`}>
+      <div className="paper-session-head">
+        <div>
+          <span className="paper-badge">Active</span>
+          <h3>{session.packageName}</h3>
+          <small>{session.tradingPair} · {formatMoney(session.tradeAmount)} Stake</small>
+        </div>
+        <i className={`session-status ${session.status}`}>{session.status}</i>
+      </div>
+
+      {session.status === 'pending' && (
+        <div className="paper-session-message">
+          <KeyRound size={19} />
+          <span><strong>Legacy request pending</strong><small>New admin-issued passkeys are verified automatically when entered.</small></span>
+        </div>
+      )}
+
+      {session.status === 'ready' && (
+        <div className="paper-ready">
+          <p>Ready for a {session.durationMinutes}-minute session. The entry quote and market bias will be captured when you start.</p>
+          <button className="primary full" onClick={onStart} disabled={starting}>
+            <Zap size={16} /> {starting ? 'Starting...' : 'Start Bot'}
+          </button>
+        </div>
+      )}
+
+      {session.status === 'active' && (
+        <>
+          <div className="paper-live-bar">
+            <span><Radio size={15} /> Round {session.roundsCompleted + 1}/100</span>
+            <strong>{countdown}</strong>
+          </div>
+          <div className="paper-bias">
+            <small>Current market bias</small>
+            <strong className={displayedBias}>{displayedBias || 'scanning'}</strong>
+          </div>
+          <div className="paper-analysis-list" aria-live="polite">
+            <span
+              className="paper-analysis-slide"
+              key={`${session.id}-${session.roundsCompleted}-${analysisIndex}`}
+            >
+              <i />
+              <small>Live analysis</small>
+              <b>{activeAnalysis}</b>
+            </span>
+            <div className="paper-analysis-dots" aria-hidden="true">
+              {analysisTerms.map((term, index) => <i className={index === analysisIndex ? 'active' : ''} key={`${term}-${index}`} />)}
+            </div>
+          </div>
+          <div className="paper-quote-row">
+            <span>Wins <strong>{session.wins}</strong></span>
+            <span>Losses <strong>{session.losses}</strong></span>
+            <span>P&amp;L <strong>{formatMoney(session.realizedProfit)}</strong></span>
+          </div>
+          <div className="inline-actions">
+            <button onClick={() => onControl('pause')}>Pause</button>
+            <button onClick={() => onControl('stop')}>Stop</button>
+          </div>
+        </>
+      )}
+
+      {session.status === 'paused' && (
+        <div className="paper-ready">
+          <p>Paused after round {session.roundsCompleted}. P&amp;L: {formatMoney(session.realizedProfit)}.</p>
+          <div className="inline-actions">
+            <button className="primary" onClick={() => onControl('resume')}><Zap size={16} /> Resume</button>
+            <button onClick={() => onControl('stop')}>Stop</button>
+          </div>
+        </div>
+      )}
+
+      {session.status === 'completed' && (
+        <div className={`paper-result ${resultClass}`}>
+          <small>session result</small>
+          <strong>{session.realizedProfit >= 0 ? '+' : ''}{formatMoney(session.realizedProfit)}</strong>
+          <div>
+            <span>{session.roundsCompleted} rounds</span>
+            <span>{session.wins} profits</span>
+            <span>{session.losses} losses</span>
+          </div>
+          <p>Results.</p>
+        </div>
+      )}
+
+      {session.status === 'cancelled' && <p className="empty">This session was cancelled.</p>}
+    </article>
+  );
+}
+
+function BotWithdrawalCenter({ withdrawals, actions, availableBalance, user, flash, onClose }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [draft, setDraft] = useState({
+    amountUsd: availableBalance > 0 ? String(Math.floor(availableBalance * 100) / 100) : '',
+    asset: 'USDT',
+    network: 'TRC20',
+    walletAddress: user?.wallet || ''
+  });
+
+  function selectAsset(asset) {
+    const option = botDepositOptions.find((item) => item.asset === asset);
+    setDraft((current) => ({ ...current, asset: option.asset, network: option.network }));
+  }
+
+  async function submitWithdrawal(event) {
+    event.preventDefault();
+    const amountUsd = Number(draft.amountUsd);
+    if (!Number.isFinite(amountUsd) || amountUsd < 10) return flash('Minimum bot withdrawal is $10.');
+    if (amountUsd > availableBalance) return flash(`You can withdraw up to ${formatMoney(availableBalance)}.`);
+    if (draft.walletAddress.trim().length < 10) return flash('Enter a valid destination wallet address.');
+    setSubmitting(true);
+    try {
+      await actions.createBotWithdrawal({ ...draft, amountUsd, walletAddress: draft.walletAddress.trim() });
+      flash('Withdrawal request submitted for processing.');
+      setDraft((current) => ({ ...current, amountUsd: '' }));
+    } catch (error) {
+      flash(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="bot-deposit-layout bot-withdrawal-layout">
+      <form className="panel bot-deposit-card" onSubmit={submitWithdrawal}>
+        <div className="bot-deposit-heading">
+          <span><Banknote size={22} /></span>
+          <div>
+            <h2>Withdraw Bot Funds</h2>
+            <p>Submit funds from the available testing balance to your destination wallet.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close withdrawal"><X size={18} /></button>
+        </div>
+        <div className="deposit-stage">
+          <div className="deposit-summary">
+            <div><small>Withdrawable</small><strong>{formatMoney(availableBalance)}</strong></div>
+            <div><small>Minimum</small><strong>$10.00</strong></div>
+          </div>
+          <label className="input-label">
+            <span>Asset and network</span>
+            <select value={draft.asset} onChange={(event) => selectAsset(event.target.value)}>
+            {withdrawalAssetOptions.map((option) => <option key={option.asset} value={option.asset}>{option.asset} - {option.networkName}</option>)}
+            </select>
+          </label>
+          <Input label="Amount (USD)" value={draft.amountUsd} onChange={(value) => setDraft({ ...draft, amountUsd: value })} />
+          <Input label={`${draft.asset} ${draft.network} destination wallet`} value={draft.walletAddress} onChange={(value) => setDraft({ ...draft, walletAddress: value })} />
+          <p className="hint">Profits are included in the available withdrawal balance.</p>
+          <button className="primary full" type="submit" disabled={submitting || availableBalance < 10}>
+            <Banknote size={16} /> {submitting ? 'Submitting…' : 'Request Withdrawal'}
+          </button>
+        </div>
+      </form>
+      <div className="panel bot-deposit-history">
+        <div className="panel-head">
+          <div>
+            <h2>Withdrawal History</h2>
+            <p>Track review and payment status.</p>
+          </div>
+        </div>
+        <div className="deposit-history-list">
+          {withdrawals.length ? withdrawals.map((withdrawal) => (
+            <article key={withdrawal.id}>
+              <b><Banknote size={18} /></b>
+              <span>
+                <strong>{formatMoney(withdrawal.amountUsd)} · {withdrawal.asset}</strong>
+                <small>{withdrawal.network} · {new Date(withdrawal.createdAt).toLocaleString()}</small>
+                {withdrawal.transactionId && <small>Transaction: {withdrawal.transactionId}</small>}
+              </span>
+              <em className={`status-${withdrawal.status}`}>{withdrawal.status}</em>
+            </article>
+          )) : <p className="empty">No bot withdrawal requests yet.</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BotConsole({ state, actions, user, tick, setPage, flash }) {
+  const [showDeposit, setShowDeposit] = useState(false);
+  const [showWithdrawal, setShowWithdrawal] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [startingSessionId, setStartingSessionId] = useState('');
+  const finishingIds = useRef(new Set());
+  const completedWindowIds = useRef(new Set());
+  const [draft, setDraft] = useState({
+    tradingPair: 'XAU/USD',
+    tradeAmount: '150',
+    durationMinutes: '1',
+    passkey: '',
+    packageId: 'basic'
+  });
+
+  const sessions = user ? state.botSessions.filter((session) => session.userId === user.id) : [];
+  const deposits = user ? (state.botDeposits || []).filter((deposit) => deposit.userId === user.id) : [];
+  const withdrawals = user ? (state.botWithdrawals || []).filter((withdrawal) => withdrawal.userId === user.id) : [];
+  const activeSessions = sessions.filter((session) => session.status === 'active');
+  const selectedPackage = botPackages.find((item) => item.id === draft.packageId) || botPackages[0];
+  const botBalance = deposits
+    .filter((deposit) => deposit.status === 'confirmed')
+    .reduce((sum, deposit) => sum + deposit.amountUsd, 0);
+  const demoProfit = sessions.reduce((sum, session) => sum + session.realizedProfit, 0);
+  const demoEquity = botBalance + demoProfit;
+  const lockedWithdrawals = withdrawals
+    .filter((withdrawal) => ['requested', 'approved', 'paid'].includes(withdrawal.status))
+    .reduce((sum, withdrawal) => sum + withdrawal.amountUsd, 0);
+  const reservedBalance = sessions
+    .filter((session) => ['pending', 'ready', 'active', 'paused'].includes(session.status))
+    .reduce((sum, session) => sum + session.tradeAmount, 0);
+  const availableBalance = Math.max(0, demoEquity - lockedWithdrawals - reservedBalance);
+  const estimatedWinningRoundMin = Number(draft.tradeAmount || 0) * 0.08 * Number(draft.durationMinutes || 1);
+  const estimatedWinningRoundMax = Number(draft.tradeAmount || 0) * 0.12 * Number(draft.durationMinutes || 1);
+
+  useEffect(() => {
+    const finished = sessions.filter((session) => {
+      const windowId = `${session.id}:${session.endsAt}`;
+      return session.status === 'active'
+        && session.endsAt
+        && session.endsAt <= tick
+        && !finishingIds.current.has(session.id)
+        && !completedWindowIds.current.has(windowId);
+    });
+    finished.forEach(async (session) => {
+      const windowId = `${session.id}:${session.endsAt}`;
+      finishingIds.current.add(session.id);
+      completedWindowIds.current.add(windowId);
+      try {
+        await actions.advanceBotSession(session.id);
+      } catch (error) {
+        if (isPaperSessionCompleteStateError(error)) {
+          await actions.refreshUserData();
+        } else {
+          completedWindowIds.current.delete(windowId);
+          flash(error.message);
+        }
+      } finally {
+        finishingIds.current.delete(session.id);
+      }
+    });
+  }, [tick, sessions.map((session) => `${session.id}:${session.status}:${session.endsAt}`).join('|')]);
+
+  if (!user) return <Gate setPage={setPage} />;
+
+  function selectPackage(pkg) {
+    setDraft((current) => ({ ...current, packageId: pkg.id, tradeAmount: String(pkg.price) }));
+    flash(`${pkg.name} passkey package selected.`);
+  }
+
+  async function activateBot() {
+    const tradeAmount = Number(draft.tradeAmount);
+    const durationMinutes = Number(draft.durationMinutes);
+    if (!selectedPackage) return flash('Select a bot package.');
+    if (tradeAmount < selectedPackage.price) return flash(`Minimum bot deposit is ${formatMoney(selectedPackage.price)}.`);
+    if (tradeAmount > availableBalance) return flash(`Trading amount cannot exceed your available balance of ${formatMoney(availableBalance)}.`);
+    if (!draft.passkey.trim()) return flash('Enter your bot passkey to activate a session.');
+    try {
+      await actions.createBotSession({
+        packageId: selectedPackage.id,
+        tradingPair: draft.tradingPair,
+        tradeAmount,
+        durationMinutes,
+        passkey: draft.passkey.trim()
+      });
+      setDraft((current) => ({ ...current, passkey: '' }));
+      flash('Passkey accepted. Your bot is ready to start.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function startBot(session) {
+    if (session.status !== 'ready') {
+      await actions.refreshUserData();
+      return flash(session.status === 'pending'
+        ? 'This bot session is still pending approval.'
+        : 'This bot session is not ready to start.');
+    }
+    if (startingSessionId === session.id) return;
+    setStartingSessionId(session.id);
+    try {
+      await actions.startBotSession(session.id);
+      flash('Bot started.');
+    } catch (error) {
+      flash(error.message);
+    } finally {
+      setStartingSessionId('');
+    }
+  }
+
+  async function controlBot(session, action) {
+    try {
+      await actions.controlBotSession(session.id, action);
+      flash(`Bot ${action === 'stop' ? 'stopped' : `${action}d`}.`);
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  return (
+    <main className="dashboard bot-console-page">
+      <section className="bot-hero panel">
+        <div className="bot-hero-copy">
+          <p className="eyebrow"><Bot size={16} /> Enchant Forex Finance Bot</p>
+          <h1>Bot Console</h1>
+          <p>The AI that trades while you rest.</p>
+        </div>
+        <div className="bot-hero-side">
+          <button className="secondary full" onClick={() => setShowGuide((value) => !value)}><LifeBuoy size={16} /> How it works</button>
+          <div className="bot-wallet-actions">
+            <button className="primary" onClick={() => { setShowDeposit((value) => !value); setShowWithdrawal(false); }}><CircleDollarSign size={16} /> Deposit</button>
+            <button className="secondary" onClick={() => { setShowWithdrawal((value) => !value); setShowDeposit(false); }}><Banknote size={16} /> Withdraw</button>
+          </div>
+          <div className="bot-balance-box">
+            <small>Available Balance</small>
+            <strong>{formatMoney(availableBalance)}</strong>
+            <Wallet size={20} />
+          </div>
+        </div>
+        <div className="bot-stat-grid">
+          <Metric title="Confirmed funding" value={formatMoney(botBalance)} icon={<CircleDollarSign />} />
+          <Metric title="Demo equity" value={formatMoney(demoEquity)} icon={<TrendingUp />} />
+          <Metric title="Active bots" value={activeSessions.length} icon={<Bot />} />
+          <Metric title="Target" value="79 / 100" icon={<Target />} />
+        </div>
+      </section>
+
+      {showGuide && (
+        <section className="panel bot-guide-panel">
+          <div className="panel-head">
+            <div>
+              <h2><LifeBuoy size={20} /> How It Works</h2>
+              <p>Fund the bot wallet, activate a package with an admin-issued passkey, then manage sessions and withdrawals from this console.</p>
+            </div>
+          </div>
+          <div className="bot-guide-grid">
+            {[
+              ['Fund wallet', 'Use Deposit to generate a payment address. Once admin confirms the transfer, the amount becomes available in your bot balance.'],
+              ['Use passkey', 'Choose a package, enter the passkey issued by an administrator, select market, stake, and session duration, then create the bot.'],
+              ['Start session', 'When the bot shows ready, start it to lock the selected stake and track rounds, market bias, wins, losses, and P&L.'],
+              ['Withdraw funds', 'Use Withdraw to enter the amount and receiving BTC or USDT TRC20 wallet. Admin approval moves the request through processing.']
+            ].map(([title, text], index) => (
+              <article key={title}>
+                <span>{String(index + 1).padStart(2, '0')}</span>
+                <strong>{title}</strong>
+                <p>{text}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {showDeposit && (
+        <BotDepositCenter
+          deposits={deposits}
+          actions={actions}
+          tick={tick}
+          flash={flash}
+          onClose={() => setShowDeposit(false)}
+        />
+      )}
+
+      {showWithdrawal && (
+        <BotWithdrawalCenter
+          withdrawals={withdrawals}
+          actions={actions}
+          availableBalance={availableBalance}
+          user={user}
+          flash={flash}
+          onClose={() => setShowWithdrawal(false)}
+        />
+      )}
+
+      <section className="panel bot-activation">
+        <div className="panel-head">
+          <div>
+            <h2><Zap size={20} /> Create Trading Bot</h2>
+            <p>Choose the market, stake size, runtime, and passkey for a session.</p>
+          </div>
+          <button className="secondary" onClick={() => selectPackage(selectedPackage)}><ShoppingCart size={16} /> Buy Passkey</button>
+        </div>
+        <div className="paper-disclosure"><ShieldCheck size={18} /><span><strong>Marketing demonstration</strong> Profitable rounds vary from 8%–12% per selected minute; losses vary from 2%–6%. Each bot runs 100 rounds unless terminated early.</span></div>
+        <div className="bot-form-grid">
+          <label className="input-label">
+            <span>Trading Pair</span>
+            <select value={draft.tradingPair} onChange={(event) => setDraft({ ...draft, tradingPair: event.target.value })}>
+              <option value="XAU/USD">XAU/USD - Gold Spot</option>
+              <option value="BTC/USD">BTC/USD - Bitcoin</option>
+              <option value="ETH/USD">ETH/USD - Ethereum</option>
+              <option value="EUR/USD">EUR/USD - Forex</option>
+            </select>
+          </label>
+          <Input label="Trade Amount (USD)" value={draft.tradeAmount} onChange={(value) => setDraft({ ...draft, tradeAmount: value })} />
+          <label className="input-label">
+            <span>Session Duration</span>
+            <select value={draft.durationMinutes} onChange={(event) => setDraft({ ...draft, durationMinutes: event.target.value })}>
+              <option value="1">1 Minute</option>
+              <option value="15">15 Minutes</option>
+              <option value="60">1 Hour</option>
+              <option value="240">4 Hours</option>
+            </select>
+          </label>
+          <Input label="Enter Passkey" type="password" value={draft.passkey} onChange={(value) => setDraft({ ...draft, passkey: value })} />
+        </div>
+        <div className="bot-activation-footer">
+          <small>Available: {formatMoney(availableBalance)}. Profitable round range: +{formatMoney(estimatedWinningRoundMin)} to +{formatMoney(estimatedWinningRoundMax)}. Package minimum: {formatMoney(selectedPackage.price)}.</small>
+          <button className="primary full" onClick={activateBot}><Radio size={16} /> Create Bot</button>
+        </div>
+      </section>
+
+      <section className="panel bot-session-panel">
+        <div className="panel-head">
+          <div>
+            <h2>Bot Sessions</h2>
+            <p>Timed rounds, analysis terms, and results.</p>
+          </div>
+          <span className="paper-badge">Active</span>
+        </div>
+        {sessions.length ? (
+          <div className="paper-session-grid">
+            {sessions.map((session) => (
+              <PaperBotSession
+                key={session.id}
+                session={session}
+                tick={tick}
+                onStart={() => startBot(session)}
+                onControl={(action) => controlBot(session, action)}
+                starting={startingSessionId === session.id}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="bot-empty">
+            <Bot size={64} />
+            <h2>No bots yet.</h2>
+            <p>Enter an admin-issued passkey to create a bot that is ready to start.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="panel bot-packages">
+        <div className="panel-head">
+          <div>
+            <h2>Available Packages</h2>
+            <p>Buy a passkey, then use it once to activate a trading bot.</p>
+          </div>
+          <button className="secondary"><KeyRound size={16} /> Special package passkeys</button>
+        </div>
+        <div className="bot-package-grid">
+          {botPackages.map((pkg) => (
+            <article className={pkg.id === draft.packageId ? 'bot-package selected' : 'bot-package'} key={pkg.id}>
+              <h3>{pkg.name}</h3>
+              <p>{pkg.id === 'basic' ? 'Entry scalper for one market with fixed risk and guarded bot execution.' : pkg.id === 'starter' ? 'Adaptive momentum and reversal engine with faster signal cycles.' : pkg.id === 'pro' ? 'Multi-asset AI ensemble across forex, gold, and crypto.' : 'Institutional-grade execution with hedged exposure and priority routing.'}</p>
+              <strong>{formatMoney(pkg.price)}</strong>
+              <small>one-time</small>
+              <div className="bot-tags">
+                {[pkg.winRate, pkg.monthly, pkg.limit, pkg.cycle, pkg.cap, pkg.risk].map((tag) => <span key={tag}>{tag}</span>)}
+              </div>
+              <button className="primary full" onClick={() => selectPackage(pkg)}><ShoppingCart size={16} /> Buy Passkey - {formatMoney(pkg.price)}</button>
+            </article>
+          ))}
+        </div>
+      </section>
     </main>
   );
 }
@@ -1585,92 +2953,50 @@ function WithdrawalCenter({ investment, balance, planStatus, onWithdraw }) {
   );
 }
 
-function GrowthMilestoneChart({ investment, tick }) {
-  const progress = progressPct(investment, tick);
-  const points = investment
-    ? Array.from({ length: 18 }, (_, index) => {
-      const ratio = index / 17;
-      return {
-        x: (ratio * 100).toFixed(2),
-        y: (100 - ((projectedBalanceAt(investment, ratio) - investment.deposit) / (effectiveTarget(investment) - investment.deposit || 1)) * 78 - 10).toFixed(2)
-      };
-    })
-    : [];
-  const areaPoints = points.length ? `0,96 ${points.map((p) => `${p.x},${p.y}`).join(' ')} 100,96` : '';
-  const currentX = Math.min(100, Math.max(0, progress));
-  const currentY = investment
-    ? (100 - ((currentBalance(investment, tick) - investment.deposit) / (effectiveTarget(investment) - investment.deposit || 1)) * 78 - 10)
-    : 88;
-  const currentPrice = investment ? currentBalance(investment, tick) : 0;
-  const openPrice = investment ? investment.deposit : 0;
-  const previousPrice = investment ? projectedBalanceAt(investment, Math.max(0, progress / 100 - 0.02)) : openPrice;
-  const priceChange = currentPrice - openPrice;
-  const priceChangePct = openPrice ? (priceChange / openPrice) * 100 : 0;
-  const isUp = currentPrice >= previousPrice;
-  const quarters = [0.25, 0.5, 0.75, 1];
+function GrowthMilestoneChart({ investment, trades, livePrice }) {
+  const orderedTrades = [...(trades || [])].sort((a, b) => a.openedAt - b.openedAt);
+  const balances = [Number(investment?.deposit || 0)];
+  orderedTrades.forEach((trade) => balances.push(balances[balances.length - 1] + tradeProfit(trade, livePrice)));
+  const minimum = Math.min(...balances);
+  const maximum = Math.max(...balances);
+  const range = Math.max(1, maximum - minimum);
+  const points = balances.map((value, index) => ({
+    x: balances.length === 1 ? 0 : (index / (balances.length - 1)) * 100,
+    y: 88 - ((value - minimum) / range) * 70
+  }));
+  const currentBalanceValue = balances[balances.length - 1] || 0;
+  const profit = currentBalanceValue - Number(investment?.deposit || 0);
+  const isUp = profit >= 0;
+  const areaPoints = points.length ? `0,96 ${points.map((point) => `${point.x},${point.y}`).join(' ')} 100,96` : '';
 
   return (
     <section className="panel milestone-panel">
       <div className="panel-head chart-head">
         <div>
-          <h2>Milestone Growth Tracker</h2>
-          <p>{investment ? 'Live account balance mapped against the active growth milestones' : 'Waiting for account activity'}</p>
+          <h2>Recorded Trade Performance</h2>
+          <p>Balance movement from recorded trades, including open-trade estimates at the live quote.</p>
         </div>
-        <span className={isUp ? 'price-pill up' : 'price-pill down'}>{investment ? `${priceChange >= 0 ? '+' : ''}${formatMoney(priceChange)} (${priceChangePct.toFixed(2)}%)` : 'No ticks'}</span>
+        <span className={isUp ? 'price-pill up' : 'price-pill down'}>{investment ? `${profit >= 0 ? '+' : ''}${formatMoney(profit)}` : 'No trades'}</span>
       </div>
       {investment && (
         <div className="ohlc-strip">
           <div><small>Deposit</small><strong>{formatMoney(investment.deposit)}</strong></div>
-          <div><small>Current</small><strong>{formatMoney(currentPrice)}</strong></div>
-          <div><small>Live Target</small><strong>{formatMoney(effectiveTarget(investment))}</strong></div>
-          <div><small>Progress</small><strong>{Math.round(progress)}%</strong></div>
+          <div><small>Current</small><strong>{formatMoney(currentBalanceValue)}</strong></div>
+          <div><small>Closed trades</small><strong>{orderedTrades.filter((trade) => trade.status === 'closed').length}</strong></div>
+          <div><small>Open trades</small><strong>{orderedTrades.filter((trade) => trade.status === 'open').length}</strong></div>
         </div>
       )}
       <div className="growth-chart premium-chart">
-        {investment ? (
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Milestone growth graph">
-            <defs>
-              <linearGradient id="growthArea" x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor="rgba(240,199,107,0.42)" />
-                <stop offset="58%" stopColor="rgba(88,214,141,0.12)" />
-                <stop offset="100%" stopColor="rgba(88,214,141,0)" />
-              </linearGradient>
-              <linearGradient id="growthLine" x1="0" x2="1" y1="0" y2="0">
-                <stop offset="0%" stopColor="#68d8ff" />
-                <stop offset="55%" stopColor="#c8f3ff" />
-                <stop offset="100%" stopColor="#71e8d6" />
-              </linearGradient>
-            </defs>
+        {investment && orderedTrades.length ? (
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Recorded trade performance graph">
             {[25, 50, 75].map((x) => <line className="chart-grid-line vertical" key={x} x1={x} x2={x} y1="6" y2="96" />)}
             {[24, 48, 72].map((y) => <line className="chart-grid-line" key={y} x1="0" x2="100" y1={y} y2={y} />)}
             <polygon className="chart-area" points={areaPoints} />
-            <polyline className="chart-shadow" points={points.map((p) => `${p.x},${p.y}`).join(' ')} />
-            <polyline className={isUp ? 'chart-line up' : 'chart-line down'} points={points.map((p) => `${p.x},${p.y}`).join(' ')} />
-            {quarters.map((ratio) => {
-              const x = ratio * 100;
-              const y = 100 - ((projectedBalanceAt(investment, ratio) - investment.deposit) / (effectiveTarget(investment) - investment.deposit || 1)) * 78 - 10;
-              return <circle className={progress >= x ? 'chart-dot active' : 'chart-dot'} key={ratio} cx={x} cy={y} r="1.55" />;
-            })}
-            <line className="chart-cursor" x1={currentX} x2={currentX} y1="6" y2="94" />
-            <line className="chart-price-line" x1="0" x2="100" y1={currentY} y2={currentY} />
-            <circle className={isUp ? 'chart-live-dot up' : 'chart-live-dot down'} cx={currentX} cy={currentY} r="2.2" />
+            <polyline className="chart-shadow" points={points.map((point) => `${point.x},${point.y}`).join(' ')} />
+            <polyline className={isUp ? 'chart-line up' : 'chart-line down'} points={points.map((point) => `${point.x},${point.y}`).join(' ')} />
+            {points.map((point, index) => <circle className="chart-dot active" key={index} cx={point.x} cy={point.y} r="1.55" />)}
           </svg>
-        ) : <p className="empty">Select a plan and submit a deposit request to activate the milestone graph.</p>}
-        {investment && (
-          <div className="chart-value-card" style={{ left: `${Math.min(78, Math.max(8, currentX))}%` }}>
-            <small>Live Balance</small>
-            <strong>{formatMoney(currentPrice)}</strong>
-          </div>
-        )}
-      </div>
-      <div className="quarter-grid">
-        {quarters.map((ratio, index) => (
-          <div className={progress >= ratio * 100 ? 'hit' : ''} key={ratio}>
-            <small>Q{index + 1}</small>
-            <strong>{investment ? formatMoney(projectedBalanceAt(investment, ratio)) : '$0.00'}</strong>
-            <span>{Math.round(ratio * 100)}% complete</span>
-          </div>
-        ))}
+        ) : <p className="empty">Recorded trades will appear here after an operator logs an execution.</p>}
       </div>
     </section>
   );
@@ -1743,7 +3069,7 @@ function WithdrawalModal({ investment, balance, addresses, onClose, onClaim }) {
   return (
     <div className="modal-backdrop">
       <div className="modal">
-        <button className="icon-button close" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        <button type="button" className="icon-button close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         <h2>{taxReady ? 'Tax Fee Required' : feeReady ? 'Withdrawal Fee Required' : 'Withdrawal Status'}</h2>
         {taxReady && (
           <>
@@ -1783,6 +3109,18 @@ function AddressBlock({ addresses }) {
 function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   const [planDraft, setPlanDraft] = useState({ name: 'Custom Investment Plan', durationHours: 24, deposit: 500, returnAmount: 4750 });
   const [addressDraft, setAddressDraft] = useState(state.addresses);
+  const [passkeyDraft, setPasskeyDraft] = useState({ expiresDays: '30' });
+  const [issuedPasskey, setIssuedPasskey] = useState(null);
+  const [tradeDraft, setTradeDraft] = useState({
+    investmentId: '',
+    side: 'buy',
+    quantity: '1',
+    entryPrice: '',
+    exitPrice: '',
+    status: 'closed',
+    externalTradeId: '',
+    notes: ''
+  });
   useEffect(() => {
     setAddressDraft(state.addresses);
   }, [state.addresses]);
@@ -1793,7 +3131,11 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   const pendingTax = state.investments.filter((i) => i.withdrawalStep === 2);
   const pendingFees = state.investments.filter((i) => i.withdrawalStep === 4);
   const readyComplete = state.investments.filter((i) => i.withdrawalStep === 5);
-  const poolValue = state.investments.reduce((sum, i) => sum + currentBalance(i, tick), 0);
+  const botSessions = state.botSessions || [];
+  const botPasskeys = state.botPasskeys || [];
+  const botDeposits = state.botDeposits || [];
+  const botWithdrawals = state.botWithdrawals || [];
+  const poolValue = state.poolWallet.balance;
 
   function userName(id) {
     return state.users.find((u) => u.id === id)?.fullName || 'Unknown';
@@ -1818,13 +3160,115 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
     }
   }
 
-  async function editBalance(id) {
-    const investment = state.investments.find((i) => i.id === id);
-    const value = Number(prompt('New balance', Math.round(currentBalance(investment, tick))));
-    if (!Number.isFinite(value)) return;
+  async function setInvestmentTo48Hours(investment) {
+    const patch = { durationHours: 48 };
+    if (investment.startedAt && investment.status === 'active') {
+      patch.endsAt = investment.startedAt + 48 * 60 * 60 * 1000;
+    }
     try {
-      await actions.patchInvestment(id, { manualBalance: value });
-      flash('Balance record updated.');
+      await actions.patchInvestment(investment.id, patch);
+      flash('Plan duration adjusted to 48 hours. Deposit amount was unchanged.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function recordTrade() {
+    const quantity = Number(tradeDraft.quantity);
+    const entryPrice = Number(tradeDraft.entryPrice);
+    const exitPrice = tradeDraft.status === 'closed' ? Number(tradeDraft.exitPrice) : null;
+    if (!tradeDraft.investmentId || quantity <= 0 || entryPrice <= 0 || (tradeDraft.status === 'closed' && exitPrice <= 0)) {
+      return flash('Select an investment and enter valid trade prices and quantity.');
+    }
+    try {
+      await actions.createTrade({
+        ...tradeDraft,
+        quantity,
+        entryPrice,
+        exitPrice,
+        symbol: 'XAU/USD',
+        priceSource: state.marketQuote.source || 'operator_record'
+      });
+      setTradeDraft((current) => ({ ...current, exitPrice: '', externalTradeId: '', notes: '' }));
+      flash('Trade recorded in the client ledger.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function deleteRecordedTrade(id) {
+    if (!window.confirm('Delete this recorded trade? This will remove it from the client ledger.')) return;
+    try {
+      await actions.deleteTrade(id);
+      flash('Recorded trade deleted.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function reviewBotSession(id, status) {
+    try {
+      await actions.patchBotSession(id, { status });
+      flash(status === 'ready' ? 'Bot passkey verified.' : 'Bot session cancelled.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function reviewBotDeposit(id, status) {
+    try {
+      await actions.patchBotDeposit(id, { status });
+      flash(status === 'confirmed' ? 'Bot deposit confirmed.' : 'Bot deposit cancelled.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function reviewBotWithdrawal(withdrawal, status) {
+    let transactionId = '';
+    let adminNote = '';
+    if (status === 'paid') {
+      transactionId = window.prompt('Enter the blockchain transaction ID or payment reference:')?.trim() || '';
+      if (!transactionId) return flash('A transaction ID is required before marking a withdrawal paid.');
+    }
+    if (status === 'rejected') {
+      adminNote = window.prompt('Reason for rejection (optional):')?.trim() || '';
+    }
+    try {
+      await actions.patchBotWithdrawal(withdrawal.id, { status, transactionId, adminNote });
+      flash(status === 'paid' ? 'Bot withdrawal marked paid.' : `Bot withdrawal ${status}.`);
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function issuePasskey() {
+    const expiresDays = Number(passkeyDraft.expiresDays);
+    if (!Number.isInteger(expiresDays) || expiresDays < 1 || expiresDays > 365) return flash('Expiry must be between 1 and 365 days.');
+    try {
+      const issued = await actions.issueBotPasskey({ ...passkeyDraft, expiresDays });
+      setIssuedPasskey(issued);
+      flash('Universal test passkey issued. Copy it now; its plaintext is not stored.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function copyIssuedPasskey() {
+    if (!issuedPasskey?.passkey) return;
+    try {
+      await navigator.clipboard.writeText(issuedPasskey.passkey);
+      flash('Passkey copied.');
+    } catch {
+      flash('Unable to copy automatically. Select the passkey and copy it manually.');
+    }
+  }
+
+  async function revokePasskey(id) {
+    if (!window.confirm('Revoke this unused passkey? It will no longer activate a bot.')) return;
+    try {
+      await actions.revokeBotPasskey(id);
+      flash('Passkey revoked.');
     } catch (error) {
       flash(error.message);
     }
@@ -1834,6 +3278,16 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
     try {
       await actions.updateAddress(addressDraft);
       flash('Addresses updated.');
+    } catch (error) {
+      flash(error.message);
+    }
+  }
+
+  async function promoteUser(user) {
+    if (!window.confirm(`Give ${user.fullName || user.email} administrator access?`)) return;
+    try {
+      await actions.patchUser(user.id, { role: 'admin' });
+      flash(`${user.fullName || user.email} is now an administrator.`);
     } catch (error) {
       flash(error.message);
     }
@@ -1877,46 +3331,246 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
       <section className="cards-grid">
         <Metric title="Total users" value={state.users.length} icon={<Users />} />
         <Metric title="Active investments" value={activeInvestments.length} icon={<Clock3 />} />
-        <Metric title="Pending requests" value={pendingDeposits.length + pendingTax.length + pendingFees.length} icon={<BadgeDollarSign />} />
-        <Metric title="Total pool value" value={formatMoney(poolValue)} icon={<Banknote />} />
+        <Metric title="Pending requests" value={pendingDeposits.length + pendingTax.length + pendingFees.length + botWithdrawals.filter((item) => ['requested', 'approved'].includes(item.status)).length} icon={<BadgeDollarSign />} />
+        <Metric title="On-chain pool value" value={poolValue === null ? 'Unavailable' : formatMoney(poolValue)} icon={<Banknote />} />
+      </section>
+
+      <section className="panel pool-monitor-panel">
+        <div>
+          <p className="eyebrow"><Wallet size={16} /> TRON reserve monitor</p>
+          <h2>USDT TRC-20 Pool Wallet</h2>
+          <p>Read-only on-chain reserve tracking</p>
+        </div>
+        <div className="pool-monitor-value">
+          <span className={`pool-status ${state.poolWallet.status}`}>{state.poolWallet.status}</span>
+          <strong>{poolValue === null ? 'Unavailable' : `${formatMoney(poolValue)} USDT`}</strong>
+          <small>{state.poolWallet.updatedAt ? `Last synced ${new Date(state.poolWallet.updatedAt).toLocaleString()}` : state.poolWallet.error || 'Waiting for TRON Grid'}</small>
+        </div>
+        <div className="inline-actions">
+          <button onClick={() => actions.refreshPoolWallet().catch((error) => flash(error.message))}><Radio size={15} /> Refresh</button>
+        </div>
       </section>
 
       <AdminSection
         title="Deposit Management"
-        headers={['User', 'Plan', 'Deposit', 'Wallet', 'Submitted', 'Action']}
-        rows={pendingDeposits.map((i) => [userName(i.userId), i.planName, formatMoney(i.deposit), walletFor(state, i.userId), new Date(i.createdAt).toLocaleString(), <RowActions approve={() => approve(i.id)} reject={() => mutateInvestment(i.id, { status: 'rejected' })} />])}
+        headers={['User', 'Plan', 'Duration', 'Deposit', 'Wallet', 'Submitted', 'Action']}
+        rows={pendingDeposits.map((i) => [
+          userName(i.userId),
+          i.planName,
+          `${i.durationHours} Hours`,
+          formatMoney(i.deposit),
+          walletFor(state, i.userId),
+          new Date(i.createdAt).toLocaleString(),
+          <div className="inline-actions">
+            <button onClick={() => approve(i.id)}><Check size={15} /> Approve</button>
+            {i.durationHours === 24 && <button onClick={() => setInvestmentTo48Hours(i)}><Clock3 size={15} /> Set 48h</button>}
+            <button onClick={() => mutateInvestment(i.id, { status: 'rejected' })}><X size={15} /> Reject</button>
+          </div>
+        ])}
       />
       <AdminSection
         title="Investment Management"
-        headers={['User', 'Plan', 'Current Balance', 'Progress', 'Status', 'Action']}
-        rows={activeInvestments.map((i) => [userName(i.userId), i.planName, formatMoney(currentBalance(i, tick)), `${Math.round(progressPct(i, tick))}%`, statusText(i, tick), <div className="inline-actions"><button onClick={() => mutateInvestment(i.id, { status: 'matured', manualBalance: effectiveTarget(i), endsAt: nowMs() })}><Check size={15} /> Mature</button><button onClick={() => editBalance(i.id)}><Edit3 size={15} /> Balance</button></div>])}
+        headers={['User', 'Plan', 'Duration', 'Deposit', 'Current Balance', 'Progress', 'Status', 'Action']}
+        rows={activeInvestments.map((i) => [
+          userName(i.userId),
+          i.planName,
+          `${i.durationHours} Hours`,
+          formatMoney(i.deposit),
+          formatMoney(currentBalance(i, state.trades, state.marketQuote.price)),
+          `${Math.round(progressPct(i, tick))}%`,
+          statusText(i, tick),
+          <div className="inline-actions">
+            {i.durationHours === 24 && i.status === 'active' && <button onClick={() => setInvestmentTo48Hours(i)}><Clock3 size={15} /> Set 48h</button>}
+            <button onClick={() => mutateInvestment(i.id, { status: 'matured', endsAt: nowMs() })}><Check size={15} /> Mature</button>
+          </div>
+        ])}
       />
+      <AdminSection
+        title="Bot Deposit Verification"
+        headers={['User', 'Asset', 'Network', 'Amount', 'Created', 'Status', 'Action']}
+        rows={botDeposits.map((deposit) => [
+          userName(deposit.userId),
+          deposit.asset,
+          deposit.network,
+          formatMoney(deposit.amountUsd),
+          new Date(deposit.createdAt).toLocaleString(),
+          deposit.status,
+          deposit.status === 'pending' ? (
+            <div className="inline-actions">
+              <button onClick={() => reviewBotDeposit(deposit.id, 'confirmed')}><Check size={15} /> Confirm</button>
+              <button onClick={() => reviewBotDeposit(deposit.id, 'cancelled')}><X size={15} /> Cancel</button>
+            </div>
+          ) : 'Reviewed'
+        ])}
+      />
+      <AdminSection
+        title="Bot Withdrawal Processing"
+        headers={['User', 'Amount', 'Asset', 'Destination', 'Requested', 'Status', 'Action']}
+        rows={botWithdrawals.map((withdrawal) => [
+          userName(withdrawal.userId),
+          formatMoney(withdrawal.amountUsd),
+          `${withdrawal.asset} ${withdrawal.network}`,
+          <code title={withdrawal.walletAddress}>{withdrawal.walletAddress}</code>,
+          new Date(withdrawal.createdAt).toLocaleString(),
+          withdrawal.status,
+          withdrawal.status === 'requested' ? (
+            <div className="inline-actions">
+              <button onClick={() => reviewBotWithdrawal(withdrawal, 'approved')}><Check size={15} /> Approve</button>
+              <button onClick={() => reviewBotWithdrawal(withdrawal, 'rejected')}><X size={15} /> Reject</button>
+            </div>
+          ) : withdrawal.status === 'approved' ? (
+            <div className="inline-actions">
+              <button onClick={() => reviewBotWithdrawal(withdrawal, 'paid')}><Banknote size={15} /> Mark Paid</button>
+              <button onClick={() => reviewBotWithdrawal(withdrawal, 'rejected')}><X size={15} /> Reject</button>
+            </div>
+          ) : withdrawal.transactionId || withdrawal.adminNote || 'Processed'
+        ])}
+      />
+      <section className="panel passkey-manager">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow"><KeyRound size={16} /> Manual issuance</p>
+            <h2>Universal Test Passkey</h2>
+            <p>Generate one reusable passkey that works for every active client and every bot package.</p>
+          </div>
+        </div>
+        <div className="passkey-issue-grid">
+          <Input label="Expires after (days)" value={passkeyDraft.expiresDays} onChange={(value) => setPasskeyDraft({ ...passkeyDraft, expiresDays: value })} />
+          <button className="primary passkey-generate" onClick={issuePasskey}><KeyRound size={16} /> Generate Universal Passkey</button>
+        </div>
+        {issuedPasskey && (
+          <div className="issued-passkey">
+            <div>
+              <small>Copy now — this code is shown only once</small>
+              <strong>{issuedPasskey.passkey}</strong>
+              <span>All clients · all bot packages · expires {new Date(issuedPasskey.expiresAt).toLocaleString()}</span>
+            </div>
+            <button onClick={copyIssuedPasskey}><Copy size={16} /> Copy</button>
+          </div>
+        )}
+      </section>
+      <AdminSection
+        title="Passkey Inventory"
+        headers={['Audience', 'Coverage', 'Issued', 'Expires', 'Uses', 'Status', 'Action']}
+        rows={botPasskeys.map((passkey) => [
+          passkey.reusable ? 'All clients' : passkey.profile?.full_name || userName(passkey.userId),
+          passkey.packageId ? passkey.packageName : 'All packages',
+          new Date(passkey.createdAt).toLocaleString(),
+          new Date(passkey.expiresAt).toLocaleString(),
+          passkey.useCount,
+          passkey.status === 'unused' && passkey.expiresAt <= tick ? 'expired' : passkey.status,
+          passkey.status === 'unused' && passkey.expiresAt > tick
+            ? <button onClick={() => revokePasskey(passkey.id)}><X size={15} /> Revoke</button>
+            : passkey.usedAt ? `Used ${new Date(passkey.usedAt).toLocaleString()}` : 'Closed'
+        ])}
+      />
+      <AdminSection
+        title="Bot Session Monitor"
+        headers={['User', 'Package', 'Market', 'Amount', 'Duration', 'Rounds', 'Status', 'Action']}
+        rows={botSessions.map((session) => [
+          userName(session.userId),
+          session.packageName,
+          session.tradingPair,
+          formatMoney(session.tradeAmount),
+          `${session.durationMinutes} min`,
+          `${session.roundsCompleted}/${session.maxRounds}`,
+          session.status,
+          session.status === 'pending' ? (
+            <div className="inline-actions">
+              <button onClick={() => reviewBotSession(session.id, 'ready')}><Check size={15} /> Approve</button>
+              <button onClick={() => reviewBotSession(session.id, 'cancelled')}><X size={15} /> Cancel</button>
+            </div>
+          ) : session.status
+        ])}
+      />
+      <section className="workbench">
+        <div className="panel">
+          <h2>Record Gold Trade</h2>
+          <label className="input-label">
+            <span>Investment</span>
+            <select value={tradeDraft.investmentId} onChange={(event) => setTradeDraft({ ...tradeDraft, investmentId: event.target.value })}>
+              <option value="">Select investment</option>
+              {activeInvestments.map((investment) => <option key={investment.id} value={investment.id}>{userName(investment.userId)} - {investment.planName}</option>)}
+            </select>
+          </label>
+          <label className="input-label">
+            <span>Side</span>
+            <select value={tradeDraft.side} onChange={(event) => setTradeDraft({ ...tradeDraft, side: event.target.value })}>
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+            </select>
+          </label>
+          <label className="input-label">
+            <span>Status</span>
+            <select value={tradeDraft.status} onChange={(event) => setTradeDraft({ ...tradeDraft, status: event.target.value })}>
+              <option value="closed">Closed</option>
+              <option value="open">Open</option>
+            </select>
+          </label>
+          <Input label="Quantity (XAU)" value={tradeDraft.quantity} onChange={(value) => setTradeDraft({ ...tradeDraft, quantity: value })} />
+          <Input label="Entry Price" value={tradeDraft.entryPrice} onChange={(value) => setTradeDraft({ ...tradeDraft, entryPrice: value })} />
+          {tradeDraft.status === 'closed' && <Input label="Exit Price" value={tradeDraft.exitPrice} onChange={(value) => setTradeDraft({ ...tradeDraft, exitPrice: value })} />}
+          <Input label="Broker Trade ID" value={tradeDraft.externalTradeId} onChange={(value) => setTradeDraft({ ...tradeDraft, externalTradeId: value })} />
+          <Input label="Notes" value={tradeDraft.notes} onChange={(value) => setTradeDraft({ ...tradeDraft, notes: value })} />
+          <p className="hint">Live XAU/USD: {state.marketQuote.price === null ? 'Unavailable' : formatMoney(state.marketQuote.price)}. P&amp;L is calculated by the database.</p>
+          <button className="primary full" onClick={recordTrade}>Record Trade</button>
+        </div>
+        <div className="panel">
+          <h2>Trade Ledger</h2>
+          <DataTable
+            headers={['Client', 'Side', 'Quantity', 'Entry', 'Exit / Live', 'Status', 'P&L', 'Action']}
+            rows={state.trades.map((trade) => {
+              const investment = state.investments.find((item) => item.id === trade.investmentId);
+              return [
+                userName(investment?.userId),
+                trade.side.toUpperCase(),
+                trade.quantity,
+                formatMoney(trade.entryPrice),
+                formatMoney(trade.exitPrice ?? state.marketQuote.price ?? 0),
+                trade.status,
+                formatMoney(tradeProfit(trade, state.marketQuote.price)),
+                <button onClick={() => deleteRecordedTrade(trade.id)}><Trash2 size={15} /> Delete</button>
+              ];
+            })}
+          />
+        </div>
+      </section>
       {pendingTax.length > 0 && (
         <AdminSection
           title="Withdrawal Confirmation"
           headers={['User', 'Current Balance', 'Amount Due', 'Action']}
-          rows={pendingTax.map((i) => [userName(i.userId), formatMoney(currentBalance(i, tick)), formatMoney(currentBalance(i, tick) * TAX_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 3 })}><Check size={15} /> Confirm Tax Cleared</button>])}
+          rows={pendingTax.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuote.price)), formatMoney(currentBalance(i, state.trades, state.marketQuote.price) * TAX_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 3 })}><Check size={15} /> Confirm Tax Cleared</button>])}
         />
       )}
       {pendingFees.length > 0 && (
         <AdminSection
           title="Funds Release Confirmation"
           headers={['User', 'Current Balance', 'Amount Due', 'Action']}
-          rows={pendingFees.map((i) => [userName(i.userId), formatMoney(currentBalance(i, tick)), formatMoney(currentBalance(i, tick) * WITHDRAWAL_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 5 })}><Check size={15} /> Confirm Withdrawal Fee Cleared</button>])}
+          rows={pendingFees.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuote.price)), formatMoney(currentBalance(i, state.trades, state.marketQuote.price) * WITHDRAWAL_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 5 })}><Check size={15} /> Confirm Withdrawal Fee Cleared</button>])}
         />
       )}
       <AdminSection
         title="Withdrawal Completion"
         headers={['User', 'Final Balance', 'Wallet', 'Action']}
-        rows={readyComplete.map((i) => [userName(i.userId), formatMoney(currentBalance(i, tick)), walletFor(state, i.userId), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 6, status: 'withdrawn' })}><Check size={15} /> Mark Processed</button>])}
+        rows={readyComplete.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuote.price)), walletFor(state, i.userId), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 6, status: 'withdrawn' })}><Check size={15} /> Mark Processed</button>])}
       />
 
       <section className="workbench">
         <div className="panel">
           <h2>User Management</h2>
           <DataTable
-            headers={['Name', 'Email', 'Wallet', 'Account Status', 'Action']}
-            rows={state.users.filter((u) => u.role !== 'admin').map((u) => [u.fullName, u.email, u.wallet, u.suspended ? 'Suspended' : 'Active', <button onClick={() => actions.patchUser(u.id, { suspended: !u.suspended }).catch((error) => flash(error.message))}>{u.suspended ? 'Reactivate' : 'Suspend'}</button>])}
+            headers={['Name', 'Email', 'Wallet', 'Role', 'Account Status', 'Action']}
+            rows={state.users.map((u) => [
+              u.fullName,
+              u.email,
+              u.wallet,
+              u.role === 'admin' ? 'Administrator' : 'Member',
+              u.suspended ? 'Suspended' : 'Active',
+              <div className="inline-actions">
+                {u.role !== 'admin' && <button onClick={() => promoteUser(u)}><Crown size={15} /> Make Admin</button>}
+                <button onClick={() => actions.patchUser(u.id, { suspended: !u.suspended }).catch((error) => flash(error.message))}>{u.suspended ? 'Reactivate' : 'Suspend'}</button>
+              </div>
+            ])}
           />
         </div>
         <div className="panel">
@@ -2084,5 +3738,3 @@ createRoot(document.getElementById('root')).render(
     <App />
   </ErrorBoundary>
 );
-
-
