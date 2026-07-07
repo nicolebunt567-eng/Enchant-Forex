@@ -8327,3 +8327,78 @@ table tr:hover td {
     linear-gradient(145deg, #071426, #020916) !important;
 }
 
+/* Light surface contrast fixes */
+.ticker-band .stat,
+.trust-strip div,
+.command-preview .command-console,
+.command-preview .command-panels article,
+.feature-matrix div,
+.architecture-grid article,
+.reputation-grid article,
+.growth-desk-card,
+.growth-desk-result div,
+.growth-desk-foot p,
+.cockpit-metrics div,
+.step {
+  color: #061426 !important;
+}
+
+.ticker-band .stat :is(b, strong),
+.trust-strip div strong,
+.command-preview .command-console :is(strong, b, h2, h3),
+.command-preview .command-panels article strong,
+.feature-matrix div strong,
+.architecture-grid article h3,
+.reputation-grid article strong,
+.growth-desk-card :is(strong, b, h2, h3),
+.growth-desk-result strong,
+.growth-desk-foot b,
+.cockpit-metrics b,
+.step :is(strong, h3) {
+  color: #061426 !important;
+  -webkit-text-fill-color: #061426;
+}
+
+.ticker-band .stat :is(small, span),
+.trust-strip div span,
+.command-preview .command-console :is(p, small, span),
+.command-preview .command-panels article p,
+.feature-matrix div span,
+.architecture-grid article p,
+.reputation-grid article p,
+.growth-desk-card :is(p, small, span),
+.growth-desk-result small,
+.growth-desk-foot span,
+.cockpit-metrics small,
+.step p {
+  color: #38506f !important;
+}
+
+.ticker-band .stat > span,
+.trust-strip div > svg,
+.command-preview .command-console svg,
+.command-preview .command-panels article svg,
+.feature-matrix div svg {
+  color: var(--brand-orange) !important;
+}
+
+.ticker-band .stat:nth-child(2) > span,
+.trust-strip div:nth-child(2) > svg,
+.command-preview .command-panels article:nth-child(2) svg,
+.feature-matrix div:nth-child(2n) svg {
+  color: var(--brand-blue) !important;
+}
+
+.command-preview .console-top b,
+.command-preview .command-console .pool-status {
+  border-color: rgba(255, 133, 8, 0.35) !important;
+  background: rgba(255, 133, 8, 0.13) !important;
+  color: #0b3f91 !important;
+}
+
+.command-preview .console-row,
+.command-preview .terminal-row {
+  border-color: rgba(6, 20, 38, 0.12) !important;
+  background: rgba(6, 20, 38, 0.035) !important;
+}
+
