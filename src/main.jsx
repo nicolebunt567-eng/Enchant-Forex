@@ -1458,16 +1458,17 @@ function App() {
 
 function Header({ currentUser, page, setPage, logout }) {
   const [open, setOpen] = useState(false);
+  const workspacePage = currentUser?.role === 'admin' ? 'admin' : 'dashboard';
   const nav = [
-    ['home', 'Plans'],
+    [currentUser ? workspacePage : 'home', 'Plans'],
     ['strategies', 'Strategies'],
     ['feedback', 'Feedback'],
     ['bot', 'Bot Console'],
-    [currentUser?.role === 'admin' ? 'admin' : 'dashboard', currentUser ? 'Dashboard' : 'Login']
+    [currentUser ? workspacePage : 'auth', currentUser ? 'Dashboard' : 'Login']
   ];
   return (
     <header className="site-header">
-      <button className="brand" onClick={() => setPage('home')} aria-label="Enchant Forex home">
+      <button className="brand" onClick={() => setPage(currentUser ? workspacePage : 'home')} aria-label="Enchant Forex home">
         <span className="brand-mark"><img src="/enchant-forex-logo.png" alt="Enchant Forex logo" /></span>
         <span>Enchant Forex</span>
       </button>
@@ -1835,7 +1836,7 @@ function GlobalFooter({ state, currentUser, setPage }) {
         </div>
 
         <div className="footer-links">
-          <button onClick={() => navigate('home')}>Plans</button>
+          <button onClick={() => navigate(currentUser ? destination : 'home')}>Plans</button>
           <button onClick={() => navigate('strategies')}>Strategies</button>
           <button onClick={() => navigate('feedback')}>Feedback</button>
           <button onClick={() => navigate(destination)}>{currentUser ? 'Workspace' : 'Member Access'}</button>
@@ -4193,6 +4194,5 @@ createRoot(document.getElementById('root')).render(
     <App />
   </ErrorBoundary>
 );
-
 
 
