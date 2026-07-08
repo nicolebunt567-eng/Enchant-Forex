@@ -2845,7 +2845,7 @@ function generatedWithdrawalReference(withdrawal) {
 function WithdrawalReceipt({ withdrawal, user, onBack }) {
   const confirmed = ['approved', 'paid'].includes(withdrawal.status);
   const rejected = withdrawal.status === 'rejected';
-  const receiptId = `SHT-WD-${String(withdrawal.id || '').slice(0, 8).toUpperCase()}`;
+  const receiptId = `EFX-WD-${String(withdrawal.id || '').slice(0, 8).toUpperCase()}`;
   const statusLabel = rejected ? 'Rejected' : confirmed ? 'Confirmed' : 'Review Pending';
   const processedLabel = confirmed ? 'Completed' : rejected ? (withdrawal.processedAt ? new Date(withdrawal.processedAt).toLocaleString() : 'Rejected') : 'Awaiting review';
   const transactionReference = confirmed
@@ -4193,5 +4193,6 @@ createRoot(document.getElementById('root')).render(
     <App />
   </ErrorBoundary>
 );
+
 
 

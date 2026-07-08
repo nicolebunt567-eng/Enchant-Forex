@@ -8605,3 +8605,131 @@ article,
     min-width: 0 !important;
   }
 }
+
+.withdrawal-receipt-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.flip-icon {
+  transform: rotate(180deg);
+}
+
+.withdrawal-receipt {
+  position: relative;
+  display: grid;
+  gap: 1.1rem;
+  overflow: hidden;
+  border: 1px solid rgba(255, 133, 8, 0.3);
+  border-radius: 8px;
+  padding: clamp(1rem, 2.8vw, 1.45rem);
+  background:
+    radial-gradient(circle at top, rgba(27, 111, 242, 0.16), transparent 18rem),
+    linear-gradient(145deg, rgba(255, 133, 8, 0.1), rgba(2, 9, 22, 0.95));
+  color: var(--brand-cream, var(--text));
+}
+
+.withdrawal-receipt::before,
+.withdrawal-receipt::after {
+  content: "";
+  position: absolute;
+  left: 1.1rem;
+  right: 1.1rem;
+  height: 1px;
+  background: repeating-linear-gradient(90deg, rgba(255, 173, 31, 0.45) 0 9px, transparent 9px 15px);
+}
+
+.withdrawal-receipt::before {
+  top: 0.7rem;
+}
+
+.withdrawal-receipt::after {
+  bottom: 0.7rem;
+}
+
+.receipt-status-mark {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  padding-top: 0.6rem;
+  text-align: center;
+}
+
+.receipt-status-mark span {
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  border: 2px solid rgba(255, 173, 31, 0.48);
+  border-radius: 50%;
+  background: rgba(255, 173, 31, 0.12);
+  color: var(--brand-amber, var(--gold));
+}
+
+.withdrawal-receipt.confirmed .receipt-status-mark span {
+  border-color: rgba(113, 232, 214, 0.55);
+  background: rgba(113, 232, 214, 0.12);
+  color: var(--green);
+}
+
+.withdrawal-receipt.rejected .receipt-status-mark span {
+  border-color: rgba(255, 107, 107, 0.58);
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--red);
+}
+
+.receipt-status-mark strong {
+  color: var(--brand-amber, var(--gold));
+  font-size: 1.25rem;
+}
+
+.receipt-amount {
+  display: grid;
+  justify-items: center;
+  gap: 0.25rem;
+  border-block: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1rem 0;
+  text-align: center;
+}
+
+.receipt-amount strong {
+  font-size: clamp(1.45rem, 3vw, 2rem);
+}
+
+.receipt-amount span {
+  color: #c8d2e3;
+  font-weight: 800;
+}
+
+.receipt-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.receipt-line {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.receipt-line strong {
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.mono-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86rem;
+}
+
+@media (max-width: 720px) {
+  .receipt-info-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
