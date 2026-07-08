@@ -1,4 +1,4 @@
-import React, { Component, useEffect, useRef, useState } from 'react';
+﻿import React, { Component, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createClient } from '@supabase/supabase-js';
 import { QRCodeSVG } from 'qrcode.react';
@@ -36,6 +36,7 @@ import {
   ShieldCheck,
   ShoppingCart,
   Search,
+  Smartphone,
   Sparkles,
   Target,
   Trash2,
@@ -63,6 +64,22 @@ const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, 
 }) : null;
 const TAX_RATE = 0.165;
 const WITHDRAWAL_RATE = 0.125;
+const tradingAssets = [
+  { symbol: 'XAU/USD', label: 'Gold Spot', unit: 'XAU', market: 'metals' },
+  { symbol: 'BTC/USD', label: 'Bitcoin', unit: 'BTC', market: 'crypto' },
+  { symbol: 'ETH/USD', label: 'Ethereum', unit: 'ETH', market: 'crypto' },
+  { symbol: 'EUR/USD', label: 'Euro / US Dollar', unit: 'EUR', market: 'forex' }
+];
+const defaultMarketQuote = {
+  symbol: 'XAU/USD',
+  price: null,
+  source: '',
+  updatedAt: null,
+  status: 'loading',
+  marketOpen: true,
+  error: ''
+};
+const initialMarketQuotes = Object.fromEntries(tradingAssets.map((asset) => [asset.symbol, { ...defaultMarketQuote, symbol: asset.symbol }]));
 
 const starterPlans = [
   { id: 'p1-500', name: '1-Day Investment Plan', durationHours: 24, deposit: 500, returnAmount: 4750 },
@@ -81,9 +98,9 @@ const botPackages = [
 
 
 const botDepositOptions = [
-  { asset: 'USDT', name: 'Tether', network: 'TRC20', networkName: 'Tron (TRC20)', mark: '₮' },
-  { asset: 'BTC', name: 'Bitcoin', network: 'BTC', networkName: 'Bitcoin', mark: '₿' },
-  { asset: 'ETH', name: 'Ethereum', network: 'ERC20', networkName: 'Ethereum (ERC20)', mark: '◆' }
+  { asset: 'USDT', name: 'Tether', network: 'TRC20', networkName: 'Tron (TRC20)', mark: 'â‚®' },
+  { asset: 'BTC', name: 'Bitcoin', network: 'BTC', networkName: 'Bitcoin', mark: 'â‚¿' },
+  { asset: 'ETH', name: 'Ethereum', network: 'ERC20', networkName: 'Ethereum (ERC20)', mark: 'â—†' }
 ];
 const withdrawalAssetOptions = botDepositOptions.filter((option) => ['USDT', 'BTC'].includes(option.asset));
 
@@ -97,8 +114,8 @@ const seedState = {
   botDeposits: [],
   botWithdrawals: [],
   addresses: {
-    usdt: 'TQ9xenchantforexReserveTRC20Address',
-    eth: '0xenchantforexReserveEthAddress',
+    usdt: 'TQ9xEnchantForexReserveTRC20Address',
+    eth: '0xEnchantForexReserveEthAddress',
     btc: 'bc1qenchantforexreservebtcaddress'
   },
   balanceEdits: [],
@@ -109,13 +126,9 @@ const seedState = {
     error: ''
   },
   marketQuote: {
-    symbol: 'XAU/USD',
-    price: null,
-    source: '',
-    updatedAt: null,
-    status: 'loading',
-    error: ''
+    ...defaultMarketQuote
   },
+  marketQuotes: initialMarketQuotes,
   currentUserId: null
 };
 
@@ -145,6 +158,50 @@ async function apiRequest(path, options = {}) {
   return data;
 }
 
+async function sendEmailNotification(type, user, details = {}) {
+  if (!user?.email) return;
+  try {
+    await fetch('/api/notify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type,
+        user: {
+          email: user.email,
+          fullName: user.fullName || user.full_name || ''
+        },
+        details
+      })
+    });
+  } catch {
+    // Notifications should never block account actions.
+  }
+}
+
+async function requestEmailVerification(email) {
+  return fetch('/api/email-verification', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'send', email })
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || 'Unable to send verification code.');
+    return payload;
+  });
+}
+
+async function verifyEmailCode(email, code, verificationId) {
+  return fetch('/api/email-verification', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'verify', email, code, verificationId })
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || 'Invalid verification code.');
+    return payload;
+  });
+}
+
 async function fetchPoolWallet() {
   const response = await fetch('/api/pool-wallet', { headers: { Accept: 'application/json' } });
   if (!response.ok) throw new Error('Unable to read the TRON pool wallet.');
@@ -159,20 +216,77 @@ async function fetchPoolWallet() {
   };
 }
 
-async function fetchGoldPrice() {
-  const response = await fetch('/api/gold-price', { headers: { Accept: 'application/json' } });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || 'Unable to read the live gold price.');
-  const price = Number(payload?.price);
-  if (!Number.isFinite(price)) throw new Error('The gold price provider returned an invalid quote.');
+function marketAsset(symbol) {
+  return tradingAssets.find((asset) => asset.symbol === symbol) || tradingAssets[0];
+}
+
+function newYorkMarketTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const dayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(value.weekday);
   return {
-    symbol: payload.symbol || 'XAU/USD',
-    price,
-    source: payload.source || 'Market data provider',
-    updatedAt: Number(payload.updatedAt) || Date.now(),
-    status: 'live',
+    dayIndex,
+    minutes: Number(value.hour) * 60 + Number(value.minute)
+  };
+}
+
+function isMarketOpen(symbol, date = new Date()) {
+  const asset = marketAsset(symbol);
+  if (asset.market === 'crypto') return true;
+  const { dayIndex, minutes } = newYorkMarketTime(date);
+  const sessionOpen = 17 * 60;
+  if (dayIndex === 6) return false;
+  if (dayIndex === 0) return minutes >= sessionOpen;
+  if (dayIndex === 5) return minutes < sessionOpen;
+  return true;
+}
+
+function normalizeQuote(payload, symbol) {
+  const price = Number(payload?.price);
+  const marketOpen = payload?.marketOpen ?? isMarketOpen(symbol);
+  return {
+    symbol,
+    price: Number.isFinite(price) ? price : null,
+    source: payload?.source || 'Twelve Data',
+    updatedAt: Number(payload?.updatedAt) || Date.now(),
+    status: marketOpen ? 'live' : 'closed',
+    marketOpen,
     error: ''
   };
+}
+
+async function fetchMarketQuote(symbol = 'XAU/USD') {
+  const response = await fetch(`/api/gold-price?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || `Unable to read the live ${symbol} price.`);
+  const price = Number(payload?.price);
+  if (!Number.isFinite(price)) throw new Error('The market data provider returned an invalid quote.');
+  return normalizeQuote(payload, payload.symbol || symbol);
+}
+
+async function fetchMarketQuotes(symbols = ['XAU/USD']) {
+  const assets = tradingAssets.filter((asset) => symbols.includes(asset.symbol));
+  const pairs = await Promise.all(assets.map(async (asset) => {
+    try {
+      const quote = await fetchMarketQuote(asset.symbol);
+      return [asset.symbol, quote];
+    } catch (error) {
+      return [asset.symbol, {
+        ...defaultMarketQuote,
+        symbol: asset.symbol,
+        status: isMarketOpen(asset.symbol) ? 'unavailable' : 'closed',
+        marketOpen: isMarketOpen(asset.symbol),
+        error: error.message
+      }];
+    }
+  }));
+  return Object.fromEntries(pairs);
 }
 
 function assertSupabase() {
@@ -357,6 +471,9 @@ async function supabaseRequest(path, options = {}) {
   const body = options.body || {};
 
   if (path === '/api/auth/register' && method === 'POST') {
+    if (!body.emailVerified || !body.verificationId || !body.verificationCode) {
+      throw new Error('Verify your email before creating an account.');
+    }
     const { data, error } = await supabase.auth.signUp({
       email: body.email,
       password: body.password,
@@ -698,12 +815,13 @@ async function supabaseRequest(path, options = {}) {
   const botWithdrawalPatch = path.match(/^\/api\/admin\/bot-withdrawals\/(.+)$/);
   if (botWithdrawalPatch && method === 'PATCH') {
     const { data: userData } = await supabase.auth.getUser();
+    const isCompletedWithdrawal = ['approved', 'paid'].includes(body.status);
     const patch = {
       status: body.status,
       transaction_id: body.transactionId || null,
       admin_note: body.adminNote || null,
       processed_by: userData.user?.id || null,
-      processed_at: ['paid', 'rejected'].includes(body.status) ? new Date().toISOString() : null,
+      processed_at: (isCompletedWithdrawal || body.status === 'rejected') ? new Date().toISOString() : null,
       updated_at: new Date().toISOString()
     };
     const { data, error } = await supabase.from('bot_withdrawals').update(patch).eq('id', botWithdrawalPatch[1]).select().single();
@@ -845,6 +963,7 @@ function normalizeState(raw) {
     balanceEdits: Array.isArray(raw?.balanceEdits) ? raw.balanceEdits : [],
     poolWallet: { ...seedState.poolWallet, ...(raw?.poolWallet || {}) },
     marketQuote: { ...seedState.marketQuote, ...(raw?.marketQuote || {}) },
+    marketQuotes: { ...initialMarketQuotes, ...(raw?.marketQuotes || {}) },
     currentUserId: users.some((user) => user.id === raw?.currentUserId && !user.suspended) ? raw.currentUserId : null
   };
 }
@@ -870,9 +989,19 @@ function nowMs() {
   return Date.now();
 }
 
-function tradeProfit(trade, livePrice = null) {
+function quoteForSymbol(marketQuotes = {}, symbol = 'XAU/USD') {
+  return marketQuotes?.[symbol] || marketQuotes?.['XAU/USD'] || defaultMarketQuote;
+}
+
+function livePriceForTrade(trade, marketQuotesOrPrice = null) {
+  if (Number.isFinite(marketQuotesOrPrice)) return marketQuotesOrPrice;
+  return quoteForSymbol(marketQuotesOrPrice, trade?.symbol || 'XAU/USD').price;
+}
+
+function tradeProfit(trade, marketQuotesOrPrice = null) {
   if (!trade || trade.status === 'cancelled') return 0;
   if (trade.status === 'closed') return Number(trade.realizedProfit || 0);
+  const livePrice = livePriceForTrade(trade, marketQuotesOrPrice);
   if (!Number.isFinite(livePrice)) return 0;
   const movement = trade.side === 'buy'
     ? livePrice - trade.entryPrice
@@ -884,11 +1013,11 @@ function tradesForInvestment(trades, investmentId) {
   return (trades || []).filter((trade) => trade.investmentId === investmentId);
 }
 
-function currentBalance(investment, trades = [], livePrice = null) {
+function currentBalance(investment, trades = [], marketQuotesOrPrice = null) {
   if (!investment) return 0;
   if (investment.manualBalance !== null && investment.manualBalance !== undefined) return investment.manualBalance;
   const profit = tradesForInvestment(trades, investment.id)
-    .reduce((sum, trade) => sum + tradeProfit(trade, livePrice), 0);
+    .reduce((sum, trade) => sum + tradeProfit(trade, marketQuotesOrPrice), 0);
   return Number(investment.deposit || 0) + profit;
 }
 
@@ -919,6 +1048,15 @@ function statusText(investment, tick = nowMs()) {
   return 'Active';
 }
 
+function timeGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour < 5) return 'Good Night';
+  if (hour < 12) return 'Good Morning';
+  if (hour < 17) return 'Good Afternoon';
+  if (hour < 21) return 'Good Evening';
+  return 'Good Night';
+}
+
 function App() {
   const [state, setState] = useState(loadState);
   const [page, setPage] = useState('home');
@@ -937,7 +1075,7 @@ function App() {
     let mounted = true;
 
     async function boot() {
-      await Promise.all([refreshPublicData(), refreshPoolWallet(), refreshGoldPrice()]);
+      await Promise.all([refreshPublicData(), refreshPoolWallet(), refreshMarketData()]);
       if (supabase) {
         await hydrateSession({ initial: true });
       } else {
@@ -978,7 +1116,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(refreshGoldPrice, 15000);
+    const timer = setInterval(refreshMarketData, 180000);
     return () => clearInterval(timer);
   }, []);
 
@@ -1059,13 +1197,25 @@ function App() {
     }
   }
 
-  async function refreshGoldPrice() {
+  async function refreshMarketData() {
     try {
-      const marketQuote = await fetchGoldPrice();
-      setState((prev) => ({ ...prev, marketQuote }));
+      const marketQuotes = await fetchMarketQuotes(['XAU/USD']);
+      setState((prev) => ({
+        ...prev,
+        marketQuotes: { ...prev.marketQuotes, ...marketQuotes },
+        marketQuote: marketQuotes['XAU/USD'] || prev.marketQuote
+      }));
     } catch (error) {
       setState((prev) => ({
         ...prev,
+        marketQuotes: Object.fromEntries(tradingAssets.map((asset) => {
+          const current = quoteForSymbol(prev.marketQuotes, asset.symbol);
+          return [asset.symbol, {
+            ...current,
+            status: current.price === null ? 'unavailable' : 'stale',
+            error: error.message
+          }];
+        })),
         marketQuote: {
           ...prev.marketQuote,
           status: prev.marketQuote.price === null ? 'unavailable' : 'stale',
@@ -1177,12 +1327,14 @@ function App() {
   const liveActions = {
     refreshPublicData,
     refreshPoolWallet,
-    refreshGoldPrice,
+    refreshGoldPrice: refreshMarketData,
+    refreshMarketData,
     refreshUserData,
     refreshAdminData,
     createDeposit: async (planId) => {
-      await apiRequest('/api/me/deposits', { method: 'POST', body: { planId } });
+      const created = await apiRequest('/api/me/deposits', { method: 'POST', body: { planId } });
       await refreshUserData();
+      return mapInvestment(created);
     },
     createBotSession: async (session) => {
       await apiRequest('/api/me/bot-sessions', { method: 'POST', body: session });
@@ -1216,8 +1368,9 @@ function App() {
     },
     claimWithdrawal: async (investmentId, step) => {
       const path = step === 2 ? `/api/me/investments/${investmentId}/claim-tax` : `/api/me/investments/${investmentId}/claim-withdrawal-fee`;
-      await apiRequest(path, { method: 'POST' });
+      const updated = await apiRequest(path, { method: 'POST' });
       await refreshUserData();
+      return mapInvestment(updated);
     },
     patchInvestment: async (id, patch) => {
       await apiRequest(`/api/admin/investments/${id}`, { method: 'PATCH', body: patch });
@@ -1284,9 +1437,9 @@ function App() {
   return (
     <>
       <Header currentUser={currentUser} page={page} setPage={setPage} logout={logout} />
-      {page === 'home' && <Landing state={state} setPage={setPage} tick={tick} />}
-      {page === 'strategies' && <StrategyPage setPage={setPage} />}
-      {page === 'feedback' && <FeedbackPage setPage={setPage} />}
+      {page === 'home' && <Landing state={state} currentUser={currentUser} setPage={setPage} tick={tick} />}
+      {page === 'strategies' && <StrategyPage currentUser={currentUser} setPage={setPage} />}
+      {page === 'feedback' && <FeedbackPage currentUser={currentUser} setPage={setPage} />}
       {page === 'auth' && <Auth state={state} onAuth={handleAuth} setPage={setPage} flash={flash} />}
       {page === 'dashboard' && (
         <UserDashboard state={state} actions={liveActions} user={currentUser} tick={tick} setPage={setPage} flash={flash} />
@@ -1340,7 +1493,7 @@ function Header({ currentUser, page, setPage, logout }) {
   );
 }
 
-function Landing({ state, setPage, tick }) {
+function Landing({ state, currentUser, setPage, tick }) {
   const active = state.investments.filter((i) => ['active', 'matured'].includes(i.status)).length;
   const deposits = 128400 + state.investments.reduce((sum, i) => sum + i.deposit, 0) + Math.floor((tick / 1000) % 300);
   const withdrawals = 38420 + state.investments.filter((i) => i.status === 'withdrawn').length * 1700 + Math.floor((tick / 1400) % 120);
@@ -1348,6 +1501,7 @@ function Landing({ state, setPage, tick }) {
   const poolWallet = state.poolWallet;
   const poolValue = poolWallet.balance;
   const allocations = poolAllocations(poolValue);
+  const memberDestination = currentUser?.role === 'admin' ? 'admin' : currentUser ? 'dashboard' : 'auth';
 
   return (
     <main>
@@ -1361,8 +1515,8 @@ function Landing({ state, setPage, tick }) {
             <p className="hero-copy">A clear path from allocation to release.</p>
             <p className="hero-subcopy">One private workspace for plan funding, live account visibility, transaction records, and digital asset settlement.</p>
             <div className="hero-actions">
-              <button className="primary" onClick={() => setPage('auth')}>Register <ChevronRight size={18} /></button>
-              <button className="secondary" onClick={() => setPage('auth')}>Login</button>
+              <button className="primary" onClick={() => setPage(memberDestination)}>{currentUser ? 'Open Dashboard' : 'Register'} <ChevronRight size={18} /></button>
+              <button className="secondary" onClick={() => setPage(memberDestination)}>{currentUser ? 'Continue Session' : 'Login'}</button>
             </div>
             <div className="hero-badges">
               <span><ShieldCheck size={16} /> Structured verification</span>
@@ -1432,7 +1586,7 @@ function Landing({ state, setPage, tick }) {
       <section className="trust-strip">
         <div><Landmark size={20} /><strong>Structured Verification</strong><span>Every deposit, withdrawal request, and funds release follows a simple automated path.</span></div>
         <div><BarChart3 size={20} /><strong>Realtime Growth Engine</strong><span>Verified plans move through live market-style account figures with dashboard progress.</span></div>
-        <div><Globe2 size={20} /><strong>Community Channel</strong><span>Telegram support is surfaced across the platform for direct member contact.</span></div>
+        <div><Globe2 size={20} /><strong>Community Channels</strong><span>Telegram and WhatsApp contact routes are surfaced across the platform.</span></div>
       </section>
 
       <section className="section prestige-section">
@@ -1459,11 +1613,11 @@ function Landing({ state, setPage, tick }) {
           <h2>Clear deposits. Live account figures.</h2>
         </div>
         <div className="plan-grid">
-          {state.plans.map((plan) => <PlanCard key={plan.id} plan={plan} onSelect={() => setPage('auth')} />)}
+          {state.plans.map((plan) => <PlanCard key={plan.id} plan={plan} onSelect={() => setPage(memberDestination)} />)}
         </div>
       </section>
 
-      <PlanGrowthDesk plans={state.plans} setPage={setPage} />
+      <PlanGrowthDesk plans={state.plans} destination={memberDestination} setPage={setPage} />
 
       <section className="section capital-visual-story">
         <div className="visual-story-copy">
@@ -1492,7 +1646,7 @@ function Landing({ state, setPage, tick }) {
           <p className="eyebrow"><Zap size={16} /> Platform intelligence</p>
           <h2>Designed for active account oversight, not just registration.</h2>
           <p>Enchant Forex brings plan details, account movement, wallet routing, records, and support into one focused member workspace.</p>
-          <button className="primary" onClick={() => setPage('auth')}>Open Your Dashboard</button>
+          <button className="primary" onClick={() => setPage(memberDestination)}>Open Your Dashboard</button>
         </div>
         <div className="feature-showcase">
           <img src="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80" alt="Financial dashboard analytics workstation" />
@@ -1651,7 +1805,8 @@ function Landing({ state, setPage, tick }) {
         </div>
         <img src="https://images.unsplash.com/photo-1557804506-669a67965ba0?auto=format&fit=crop&w=1000&q=80" alt="Professional client support and communication team" />
         <div className="support-actions">
-          <a href="https://t.me/enchantforex" target="_blank" rel="noreferrer"><MessageCircle size={18} /> Telegram</a>
+          <a href="https://t.me/Sir_Zahoor"><MessageCircle size={18} /> Telegram</a>
+          <a href="https://wa.me/17022187068"><Smartphone size={18} /> WhatsApp</a>
         </div>
       </section>
 
@@ -1684,7 +1839,8 @@ function GlobalFooter({ state, currentUser, setPage }) {
           <button onClick={() => navigate('strategies')}>Strategies</button>
           <button onClick={() => navigate('feedback')}>Feedback</button>
           <button onClick={() => navigate(destination)}>{currentUser ? 'Workspace' : 'Member Access'}</button>
-          <a href="https://t.me/enchantforex" target="_blank" rel="noreferrer"><MessageCircle size={15} /> Telegram</a>
+          <a href="https://t.me/Sir_Zahoor" target="_blank" rel="noreferrer"><MessageCircle size={15} /> Telegram</a>
+          <a href="https://wa.me/17022187068" target="_blank" rel="noreferrer"><Smartphone size={15} /> WhatsApp</a>
         </div>
 
         <div className="footer-reserve">
@@ -1693,12 +1849,12 @@ function GlobalFooter({ state, currentUser, setPage }) {
             <b className={poolWallet.status}>{poolWallet.status}</b>
           </div>
           <strong>{poolValue === null ? 'Connecting...' : formatMoney(poolValue)}</strong>
-          <small>{poolWallet.updatedAt ? `USDT · synced ${new Date(poolWallet.updatedAt).toLocaleTimeString()}` : 'On-chain USDT pool'}</small>
+          <small>{poolWallet.updatedAt ? `USDT Â· synced ${new Date(poolWallet.updatedAt).toLocaleTimeString()}` : 'On-chain USDT pool'}</small>
         </div>
       </div>
 
       <div className="footer-bottom">
-        <p>© {new Date().getFullYear()} Enchant Forex. All rights reserved.</p>
+        <p>Â© {new Date().getFullYear()} Enchant Forex. All rights reserved.</p>
         <p>Digital assets involve risk. Review all terms before proceeding.</p>
         <span><ShieldCheck size={14} /> Read-only reserve data</span>
       </div>
@@ -1710,7 +1866,8 @@ function Stat({ label, value, icon }) {
   return <div className="stat"><span>{React.cloneElement(icon, { size: 20 })}</span><b>{value}</b><small>{label}</small></div>;
 }
 
-function StrategyPage({ setPage }) {
+function StrategyPage({ currentUser, setPage }) {
+  const memberDestination = currentUser?.role === 'admin' ? 'admin' : currentUser ? 'dashboard' : 'auth';
   const strategyBlocks = [
     ['Forex Session Mapping', 'Market activity is reviewed around London and New York overlap, where liquidity is typically deeper and spreads are more stable.'],
     ['Crypto Momentum Rotation', 'Crypto exposure is organized around momentum, volume expansion, and support/resistance reactions.'],
@@ -1733,7 +1890,7 @@ function StrategyPage({ setPage }) {
           <p className="eyebrow"><BarChart3 size={16} /> Trading strategy</p>
           <h1>How Enchant Forex Structures Market Opportunity</h1>
           <p>Enchant Forex is presented around disciplined market selection, live balance tracking, staged verification, and risk-managed forex and crypto exposure.</p>
-          <button className="primary" onClick={() => setPage('auth')}>Enter Member Dashboard</button>
+          <button className="primary" onClick={() => setPage(memberDestination)}>Enter Member Dashboard</button>
         </div>
       </section>
       <section className="section strategy-section">
@@ -1784,7 +1941,8 @@ function StrategyPage({ setPage }) {
   );
 }
 
-function FeedbackPage({ setPage }) {
+function FeedbackPage({ currentUser, setPage }) {
+  const memberDestination = currentUser?.role === 'admin' ? 'admin' : currentUser ? 'dashboard' : 'auth';
   const feedback = [
     {
       name: 'Arielle M.',
@@ -1837,7 +1995,7 @@ function FeedbackPage({ setPage }) {
           <p className="eyebrow"><MessageCircle size={16} /> Member feedback</p>
           <h1>Sample Client Feedback From Completed Cycles</h1>
           <p>Illustrative member feedback examples showing how users may describe the Enchant Forex experience across deposits, tracking, withdrawal confirmation, and funds release.</p>
-          <button className="primary" onClick={() => setPage('auth')}>Open Member Access</button>
+          <button className="primary" onClick={() => setPage(memberDestination)}>Open Member Access</button>
         </div>
       </section>
 
@@ -1927,7 +2085,7 @@ function PlanCard({ plan, onSelect }) {
   );
 }
 
-function PlanGrowthDesk({ plans, setPage }) {
+function PlanGrowthDesk({ plans, destination = 'auth', setPage }) {
   const [selectedId, setSelectedId] = useState(plans[0]?.id || '');
   const selected = plans.find((plan) => plan.id === selectedId) || plans[0];
   if (!selected) return null;
@@ -1941,7 +2099,7 @@ function PlanGrowthDesk({ plans, setPage }) {
         <p className="eyebrow"><Calculator size={16} /> Growth desk</p>
         <h2>Preview live plan figures before entering the dashboard.</h2>
         <p>Select a plan to see the deposit, live target, duration, growth pace, and final dashboard outcome in one clean view.</p>
-        <button className="primary" onClick={() => setPage('auth')}>Create Member Profile</button>
+        <button className="primary" onClick={() => setPage(destination)}>Create Member Profile</button>
       </div>
       <div className="growth-desk-card">
         <div className="growth-desk-selector">
@@ -1975,25 +2133,69 @@ function PlanGrowthDesk({ plans, setPage }) {
 function Auth({ onAuth, flash }) {
   const [mode, setMode] = useState('register');
   const [form, setForm] = useState({ fullName: '', nationality: '', email: '', phone: '', password: '', confirm: '', wallet: '' });
+  const [verification, setVerification] = useState({ email: '', id: '', code: '', sent: false, sending: false, testCode: '' });
 
   function change(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
+    if (key === 'email') {
+      setVerification({ email: '', id: '', code: '', sent: false, sending: false, testCode: '' });
+    }
+  }
+
+  function registerPayload() {
+    return {
+      fullName: form.fullName.trim(),
+      nationality: form.nationality.trim(),
+      email: form.email.trim().toLowerCase(),
+      phone: form.phone.trim(),
+      password: form.password,
+      wallet: form.wallet.trim()
+    };
+  }
+
+  function validateRegistration() {
+    if (!form.fullName.trim() || !form.nationality.trim() || !form.email.trim() || !form.phone.trim() || !form.wallet.trim()) {
+      flash('Enter your full name, country, email, phone number, and wallet address.');
+      return false;
+    }
+    if (form.password.length < 6) {
+      flash('Password must be at least 6 characters.');
+      return false;
+    }
+    if (form.password !== form.confirm) {
+      flash('Passwords do not match.');
+      return false;
+    }
+    return true;
+  }
+
+  async function sendVerificationCode() {
+    if (!validateRegistration()) return;
+    const email = form.email.trim().toLowerCase();
+    setVerification((current) => ({ ...current, sending: true }));
+    try {
+      const result = await requestEmailVerification(email);
+      setVerification({ email, id: result.verificationId, code: '', sent: true, sending: false, testCode: result.testCode || '' });
+      flash(result.testCode ? `Verification code sent. Test code: ${result.testCode}` : 'Verification code sent to your email.');
+    } catch (error) {
+      setVerification((current) => ({ ...current, sending: false }));
+      flash(error.message);
+    }
   }
 
   async function register(e) {
     e.preventDefault();
-    if (form.password !== form.confirm) return flash('Passwords do not match.');
+    if (!validateRegistration()) return;
+    if (!verification.sent || verification.email !== form.email.trim().toLowerCase()) {
+      await sendVerificationCode();
+      return;
+    }
+    if (!verification.code.trim()) return flash('Enter the verification code sent to your email.');
     try {
+      await verifyEmailCode(form.email.trim().toLowerCase(), verification.code, verification.id);
       const data = await apiRequest('/api/auth/register', {
         method: 'POST',
-        body: {
-          fullName: form.fullName,
-          nationality: form.nationality,
-          email: form.email,
-          phone: form.phone,
-          password: form.password,
-          wallet: form.wallet
-        }
+        body: { ...registerPayload(), emailVerified: true, verificationId: verification.id, verificationCode: verification.code.trim() }
       });
       await onAuth(data);
       flash('Registration complete.');
@@ -2048,12 +2250,13 @@ function Auth({ onAuth, flash }) {
             {mode === 'register' && (
               <>
                 <Input label="Full Name" value={form.fullName} onChange={(v) => change('fullName', v)} />
-                <Input label="Nationality" value={form.nationality} onChange={(v) => change('nationality', v)} />
+                <Input label="Country" value={form.nationality} onChange={(v) => change('nationality', v)} />
                 <Input label="Email Address" type="email" value={form.email} onChange={(v) => change('email', v)} />
                 <Input label="Phone Number" value={form.phone} onChange={(v) => change('phone', v)} />
                 <Input label="BTC or USDT wallet address" value={form.wallet} onChange={(v) => change('wallet', v)} fullWidth />
                 <Input label="Password" type="password" value={form.password} onChange={(v) => change('password', v)} />
                 <Input label="Confirm Password" type="password" value={form.confirm} onChange={(v) => change('confirm', v)} />
+                <Input label="Email Verification Code" value={verification.code} onChange={(v) => setVerification((current) => ({ ...current, code: v }))} fullWidth disabled={!verification.sent} />
               </>
             )}
             {mode === 'login' && (
@@ -2062,8 +2265,15 @@ function Auth({ onAuth, flash }) {
                 <Input label="Password" type="password" value={form.password} onChange={(v) => change('password', v)} />
               </>
             )}
-            <button className="primary full" type="submit">{mode === 'register' ? 'Create Account' : 'Login'}</button>
-            <p className="hint">Secure member access is required to continue.</p>
+            <button className="primary full" type="submit" disabled={verification.sending}>
+              {mode === 'register' ? (verification.sent ? 'Verify & Create Account' : 'Send Verification Code') : 'Login'}
+            </button>
+            {mode === 'register' && verification.sent && (
+              <button className="secondary full auth-resend" type="button" disabled={verification.sending} onClick={sendVerificationCode}>
+                Resend Code
+              </button>
+            )}
+            <p className="hint">{verification.testCode ? `Testing code: ${verification.testCode}` : 'Secure member access is required to continue.'}</p>
           </form>
         </div>
       </section>
@@ -2071,7 +2281,7 @@ function Auth({ onAuth, flash }) {
   );
 }
 
-function Input({ label, value, onChange, type = 'text', fullWidth = false }) {
+function Input({ label, value, onChange, type = 'text', fullWidth = false, disabled = false }) {
   const [showValue, setShowValue] = useState(false);
   const isPassword = type === 'password';
   const inputType = isPassword && showValue ? 'text' : type;
@@ -2080,7 +2290,7 @@ function Input({ label, value, onChange, type = 'text', fullWidth = false }) {
     <label className={`${isPassword ? 'input-label password-label' : 'input-label'}${fullWidth ? ' full-field' : ''}`}>
       <span>{label}</span>
       <div className="input-control">
-        <input required type={inputType} value={value} onChange={(e) => onChange(e.target.value)} />
+        <input required type={inputType} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} />
         {isPassword && (
           <button
             aria-label={showValue ? 'Hide password' : 'Show password'}
@@ -2102,8 +2312,9 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
   const investments = state.investments.filter((i) => i.userId === user?.id);
   const activeInvestment = investments[0];
   const activeTrades = tradesForInvestment(state.trades, activeInvestment?.id);
-  const liveGoldPrice = state.marketQuote.price;
-  const balance = currentBalance(activeInvestment, state.trades, liveGoldPrice);
+  const goldQuote = quoteForSymbol(state.marketQuotes, 'XAU/USD');
+  const balance = currentBalance(activeInvestment, state.trades, state.marketQuotes);
+  const totalProfit = activeTrades.reduce((sum, trade) => sum + tradeProfit(trade, state.marketQuotes), 0);
   const planStatus = statusText(activeInvestment, tick);
   const targetBalance = effectiveTarget(activeInvestment);
 
@@ -2135,14 +2346,21 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
 
   return (
     <main className="dashboard">
-      <section className="dash-hero">
-        <div>
-          <p className="eyebrow"><LayoutDashboard size={16} /> User dashboard</p>
-          <h1>{user.fullName}</h1>
-          <p>{user.email}</p>
-        </div>
-        <button className="secondary" onClick={() => setShowWithdrawal(true)} disabled={planStatus !== 'Matured'}><Wallet size={18} /> Withdraw</button>
-      </section>
+      <FinanceDashboardHero
+        eyebrow={<><LayoutDashboard size={16} /> Investment dashboard</>}
+        name={user.fullName}
+        label={user.email}
+        balance={balance}
+        profit={totalProfit}
+        trades={activeTrades.length}
+        balanceLabel="Current Balance"
+        profitLabel="Total Profit"
+        tradesLabel="Total Trades"
+        onDeposit={() => document.getElementById('investment-deposit')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        onWithdraw={() => setShowWithdrawal(true)}
+        onTrade={() => document.getElementById('investment-trades')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        withdrawDisabled={planStatus !== 'Matured'}
+      />
 
       <section className="status-rail">
         {['Deposit', 'Approval', 'Tracking', 'Withdrawal', 'Withdrawal Confirmation', 'Funds Release'].map((label, index) => {
@@ -2156,7 +2374,7 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
         <Metric title="Amount deposited" value={formatMoney(activeInvestment?.deposit || 0)} icon={<Coins />} />
         <Metric title="Current balance" value={formatMoney(balance)} icon={<CircleDollarSign />} />
         <Metric title="Plan status" value={planStatus} icon={<ShieldCheck />} />
-        <Metric title="Live gold" value={liveGoldPrice === null ? 'Unavailable' : formatMoney(liveGoldPrice)} icon={<TrendingUp />} />
+        <Metric title="Live gold" value={goldQuote.price === null ? 'Unavailable' : formatMoney(goldQuote.price)} icon={<TrendingUp />} />
       </section>
 
       <DepositCenter plans={state.plans} addresses={state.addresses} selectedPlan={depositPlanId} setSelectedPlan={setSelectedPlan} submitDeposit={submitDeposit} flash={flash} />
@@ -2176,17 +2394,17 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
       </section>
 
       <section className="dashboard-split">
-        <GrowthMilestoneChart investment={activeInvestment} trades={activeTrades} livePrice={liveGoldPrice} />
+        <GrowthMilestoneChart investment={activeInvestment} trades={activeTrades} marketQuotes={state.marketQuotes} />
         <LiveMemberActivity tick={tick} />
       </section>
 
-      <section className="panel">
+      <section className="panel" id="investment-trades">
         <div className="panel-head">
           <div>
-            <h2>Gold Trade Ledger</h2>
-            <p>Recorded executions and P&amp;L for this investment. Open-trade estimates use the displayed XAU/USD quote.</p>
+            <h2>Trade Ledger</h2>
+            <p>Recorded executions and P&amp;L for this investment. Open-trade estimates use each market's current quote.</p>
           </div>
-          <span className={`pool-status ${state.marketQuote.status}`}>{state.marketQuote.status}</span>
+          <span className={`pool-status ${goldQuote.status}`}>Gold {goldQuote.status}</span>
         </div>
         <DataTable
           headers={['Opened', 'Market', 'Side', 'Quantity', 'Entry', 'Exit / Live', 'Status', 'Profit / Loss']}
@@ -2196,12 +2414,12 @@ function UserDashboard({ state, actions, user, tick, setPage, flash }) {
             trade.side.toUpperCase(),
             trade.quantity,
             formatMoney(trade.entryPrice),
-            formatMoney(trade.exitPrice ?? liveGoldPrice ?? 0),
+            formatMoney(trade.exitPrice ?? livePriceForTrade(trade, state.marketQuotes) ?? 0),
             trade.status,
-            formatMoney(tradeProfit(trade, liveGoldPrice))
+            formatMoney(tradeProfit(trade, state.marketQuotes))
           ])}
         />
-        <p className="hint">Market source: {state.marketQuote.source || 'Not configured'}{state.marketQuote.updatedAt ? `, updated ${new Date(state.marketQuote.updatedAt).toLocaleTimeString()}` : ''}.</p>
+        <p className="hint">Market source: {goldQuote.source || 'Not configured'}{goldQuote.updatedAt ? `, Gold updated ${new Date(goldQuote.updatedAt).toLocaleTimeString()}` : ''}.</p>
       </section>
 
       <section className="panel">
@@ -2286,7 +2504,7 @@ function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
             <h2>Deposit Crypto</h2>
             <p>Fund your bot trading account</p>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="Close deposit panel"><X size={18} /></button>
+          <button className="secondary" onClick={onClose}><ChevronRight className="flip-icon" size={16} /> Back</button>
         </div>
 
         <div className="deposit-steps" aria-label={`Deposit step ${step} of 3`}>
@@ -2328,7 +2546,7 @@ function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
               <span><strong>{selected.asset} - {selected.networkName}</strong><small>Change</small></span>
             </button>
             <label className="input-label deposit-amount">
-              <span>Amount (USD) <em>· Minimum $150</em></span>
+              <span>Amount (USD) <em>Â· Minimum $150</em></span>
               <input type="number" min="150" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} />
             </label>
             <div className="quick-amounts">
@@ -2336,8 +2554,8 @@ function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
             </div>
             <div className="deposit-summary"><span>You send</span><strong>{selected.asset === 'USDT' ? `${Number(amount || 0).toFixed(2)} USDT` : `${formatMoney(Number(amount || 0))} in ${selected.asset}`}</strong></div>
             <div className="deposit-actions">
-              <button className="secondary" onClick={() => setStep(1)}>← Back</button>
-              <button className="primary" disabled={submitting} onClick={generateAddress}>{submitting ? 'Generating…' : 'Generate Address'}</button>
+              <button className="secondary" onClick={() => setStep(1)}>â† Back</button>
+              <button className="primary" disabled={submitting} onClick={generateAddress}>{submitting ? 'Generatingâ€¦' : 'Generate Address'}</button>
             </div>
           </div>
         )}
@@ -2361,7 +2579,7 @@ function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
               <small>Amount to send</small>
               <div><code>{paymentLabel}</code><button onClick={() => copyValue(paymentLabel, 'Amount')}><Copy size={16} /> Copy</button></div>
             </div>
-            <button className="secondary full" onClick={startAnotherDeposit}>← Make Another Deposit</button>
+            <button className="secondary full" onClick={startAnotherDeposit}>â† Make Another Deposit</button>
           </div>
         )}
       </div>
@@ -2381,10 +2599,10 @@ function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
             const option = botDepositOptions.find((item) => item.asset === deposit.asset);
             return (
               <article key={deposit.id}>
-                <b>{option?.mark || '¤'}</b>
+                <b>{option?.mark || 'Â¤'}</b>
                 <span>
                   <strong>{formatMoney(deposit.amountUsd)} <small>({deposit.asset})</small></strong>
-                  <code>{deposit.network} · {shortAddress(deposit.paymentAddress)}</code>
+                  <code>{deposit.network} Â· {shortAddress(deposit.paymentAddress)}</code>
                 </span>
                 <i className={`deposit-status ${expired ? 'expired' : deposit.status}`}>{expired ? 'Expired' : deposit.status}</i>
                 <time>{new Date(deposit.createdAt).toLocaleDateString()}</time>
@@ -2399,10 +2617,10 @@ function BotDepositCenter({ deposits, actions, tick, flash, onClose }) {
 
 function shortAddress(value = '') {
   if (value.length <= 14) return value;
-  return `${value.slice(0, 7)}…${value.slice(-5)}`;
+  return `${value.slice(0, 7)}â€¦${value.slice(-5)}`;
 }
 
-function PaperBotSession({ session, tick, onStart, onControl, starting }) {
+function PaperBotSession({ session, tick, onStart, onControl, starting, marketQuote }) {
   const remaining = session.endsAt ? Math.max(0, Math.ceil((session.endsAt - tick) / 1000)) : 0;
   const countdown = `${String(Math.floor(remaining / 60)).padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`;
   const displayedAnalysis = session.analysis;
@@ -2413,6 +2631,7 @@ function PaperBotSession({ session, tick, onStart, onControl, starting }) {
     : ['Scanning price structure', 'Measuring momentum', 'Evaluating trend alignment', 'Confirming liquidity conditions'];
   const analysisIndex = Math.floor(Math.max(0, tick - (session.startedAt || tick)) / 3500) % analysisTerms.length;
   const activeAnalysis = analysisTerms[analysisIndex];
+  const marketAvailable = marketQuote?.marketOpen && marketQuote?.status === 'live' && Number.isFinite(marketQuote?.price);
 
   return (
     <article className={`paper-session ${session.status}`}>
@@ -2420,7 +2639,7 @@ function PaperBotSession({ session, tick, onStart, onControl, starting }) {
         <div>
           <span className="paper-badge">Active</span>
           <h3>{session.packageName}</h3>
-          <small>{session.tradingPair} · {formatMoney(session.tradeAmount)} Stake</small>
+          <small>{session.tradingPair} Â· {formatMoney(session.tradeAmount)} Stake Â· {marketQuote?.status || 'loading'}</small>
         </div>
         <i className={`session-status ${session.status}`}>{session.status}</i>
       </div>
@@ -2435,8 +2654,8 @@ function PaperBotSession({ session, tick, onStart, onControl, starting }) {
       {session.status === 'ready' && (
         <div className="paper-ready">
           <p>Ready for a {session.durationMinutes}-minute session. The entry quote and market bias will be captured when you start.</p>
-          <button className="primary full" onClick={onStart} disabled={starting}>
-            <Zap size={16} /> {starting ? 'Starting...' : 'Start Bot'}
+          <button className="primary full" onClick={onStart} disabled={starting || !marketAvailable}>
+            <Zap size={16} /> {starting ? 'Starting...' : marketAvailable ? 'Start Bot' : 'Market Closed'}
           </button>
         </div>
       )}
@@ -2480,7 +2699,7 @@ function PaperBotSession({ session, tick, onStart, onControl, starting }) {
         <div className="paper-ready">
           <p>Paused after round {session.roundsCompleted}. P&amp;L: {formatMoney(session.realizedProfit)}.</p>
           <div className="inline-actions">
-            <button className="primary" onClick={() => onControl('resume')}><Zap size={16} /> Resume</button>
+            <button className="primary" onClick={() => onControl('resume')} disabled={!marketAvailable}><Zap size={16} /> Resume</button>
             <button onClick={() => onControl('stop')}>Stop</button>
           </div>
         </div>
@@ -2506,6 +2725,7 @@ function PaperBotSession({ session, tick, onStart, onControl, starting }) {
 
 function BotWithdrawalCenter({ withdrawals, actions, availableBalance, user, flash, onClose }) {
   const [submitting, setSubmitting] = useState(false);
+  const [selectedReceipt, setSelectedReceipt] = useState(null);
   const [draft, setDraft] = useState({
     amountUsd: availableBalance > 0 ? String(Math.floor(availableBalance * 100) / 100) : '',
     asset: 'USDT',
@@ -2545,7 +2765,7 @@ function BotWithdrawalCenter({ withdrawals, actions, availableBalance, user, fla
             <h2>Withdraw Bot Funds</h2>
             <p>Submit funds from the available testing balance to your destination wallet.</p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close withdrawal"><X size={18} /></button>
+          <button type="button" className="secondary" onClick={onClose}><ChevronRight className="flip-icon" size={16} /> Back</button>
         </div>
         <div className="deposit-stage">
           <div className="deposit-summary">
@@ -2562,39 +2782,119 @@ function BotWithdrawalCenter({ withdrawals, actions, availableBalance, user, fla
           <Input label={`${draft.asset} ${draft.network} destination wallet`} value={draft.walletAddress} onChange={(value) => setDraft({ ...draft, walletAddress: value })} />
           <p className="hint">Profits are included in the available withdrawal balance.</p>
           <button className="primary full" type="submit" disabled={submitting || availableBalance < 10}>
-            <Banknote size={16} /> {submitting ? 'Submitting…' : 'Request Withdrawal'}
+            <Banknote size={16} /> {submitting ? 'Submittingâ€¦' : 'Request Withdrawal'}
           </button>
         </div>
       </form>
       <div className="panel bot-deposit-history">
-        <div className="panel-head">
-          <div>
-            <h2>Withdrawal History</h2>
-            <p>Track review and payment status.</p>
-          </div>
-        </div>
-        <div className="deposit-history-list">
-          {withdrawals.length ? withdrawals.map((withdrawal) => (
-            <article key={withdrawal.id}>
-              <b><Banknote size={18} /></b>
-              <span>
-                <strong>{formatMoney(withdrawal.amountUsd)} · {withdrawal.asset}</strong>
-                <small>{withdrawal.network} · {new Date(withdrawal.createdAt).toLocaleString()}</small>
-                {withdrawal.transactionId && <small>Transaction: {withdrawal.transactionId}</small>}
-              </span>
-              <em className={`status-${withdrawal.status}`}>{withdrawal.status}</em>
-            </article>
-          )) : <p className="empty">No bot withdrawal requests yet.</p>}
-        </div>
+        {selectedReceipt ? (
+          <WithdrawalReceipt withdrawal={selectedReceipt} user={user} onBack={() => setSelectedReceipt(null)} />
+        ) : (
+          <>
+            <div className="panel-head">
+              <div>
+                <h2>Withdrawal History</h2>
+                <p>Track review and payment status.</p>
+              </div>
+            </div>
+            <div className="deposit-history-list withdrawal-history-list">
+              {withdrawals.length ? withdrawals.map((withdrawal) => (
+                <article
+                  className="withdrawal-history-row"
+                  key={withdrawal.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedReceipt(withdrawal)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setSelectedReceipt(withdrawal);
+                    }
+                  }}
+                >
+                  <b><Banknote size={18} /></b>
+                  <span>
+                    <strong>{formatMoney(withdrawal.amountUsd)} Â· {withdrawal.asset}</strong>
+                    <small>{withdrawal.network} Â· {new Date(withdrawal.createdAt).toLocaleString()}</small>
+                    {withdrawal.transactionId && <small>Transaction: {withdrawal.transactionId}</small>}
+                  </span>
+                  <span className="withdrawal-row-action">
+                    <em className={`deposit-status ${withdrawal.status}`}>{withdrawal.status}</em>
+                    <small><ReceiptText size={14} /> Receipt</small>
+                  </span>
+                </article>
+              )) : <p className="empty">No bot withdrawal requests yet.</p>}
+            </div>
+          </>
+        )}
       </div>
     </section>
   );
 }
 
+function generatedWithdrawalReference(withdrawal) {
+  const source = `${withdrawal.id || ''}:${withdrawal.createdAt || ''}:${withdrawal.amountUsd || ''}:${withdrawal.walletAddress || ''}`;
+  let seed = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    seed = (seed * 31 + source.charCodeAt(index)) >>> 0;
+  }
+  const parts = [0, 1, 2].map((offset) => ((seed + offset * 0x9e3779b9) >>> 0).toString(16).toUpperCase().padStart(8, '0'));
+  return `TX-${parts.join('-')}`;
+}
+
+function WithdrawalReceipt({ withdrawal, user, onBack }) {
+  const confirmed = ['approved', 'paid'].includes(withdrawal.status);
+  const rejected = withdrawal.status === 'rejected';
+  const receiptId = `SHT-WD-${String(withdrawal.id || '').slice(0, 8).toUpperCase()}`;
+  const statusLabel = rejected ? 'Rejected' : confirmed ? 'Confirmed' : 'Review Pending';
+  const processedLabel = confirmed ? 'Completed' : rejected ? (withdrawal.processedAt ? new Date(withdrawal.processedAt).toLocaleString() : 'Rejected') : 'Awaiting review';
+  const transactionReference = confirmed
+    ? (withdrawal.transactionId || generatedWithdrawalReference(withdrawal))
+    : rejected
+      ? (withdrawal.transactionId || 'Unavailable')
+      : 'Awaiting approval';
+
+  return (
+    <div className="withdrawal-receipt-page">
+      <div className="panel-head">
+        <button className="secondary" onClick={onBack}><ChevronRight className="flip-icon" size={16} /> History</button>
+        <span className={`deposit-status ${withdrawal.status}`}>{withdrawal.status}</span>
+      </div>
+      <div className={`withdrawal-receipt ${confirmed ? 'confirmed' : ''} ${rejected ? 'rejected' : ''}`}>
+        <div className="receipt-status-mark">
+          <span>{confirmed ? <Check size={36} /> : rejected ? <X size={34} /> : <Clock3 size={34} />}</span>
+          <strong>{statusLabel}</strong>
+          <small>{receiptId}</small>
+        </div>
+        <div className="receipt-amount">
+          <small>Withdrawal amount</small>
+          <strong>{formatMoney(withdrawal.amountUsd)} Â· {withdrawal.asset}</strong>
+          <span>{withdrawal.network} Network</span>
+        </div>
+        <div className="receipt-info-grid">
+          <ReceiptLine label="Client" value={user?.fullName || user?.email || 'Account holder'} />
+          <ReceiptLine label="Destination wallet" value={withdrawal.walletAddress} mono />
+          <ReceiptLine label="Requested" value={new Date(withdrawal.createdAt).toLocaleString()} />
+          <ReceiptLine label="Processed" value={processedLabel} />
+          <ReceiptLine label="Transaction reference" value={transactionReference} mono />
+          <ReceiptLine label="Status note" value={withdrawal.adminNote || (confirmed ? 'Payment approved' : rejected ? 'Withdrawal was not approved.' : 'Awaiting admin review.')} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReceiptLine({ label, value, mono = false }) {
+  return (
+    <div className="receipt-line">
+      <small>{label}</small>
+      <strong className={mono ? 'mono-value' : ''}>{value}</strong>
+    </div>
+  );
+}
+
 function BotConsole({ state, actions, user, tick, setPage, flash }) {
-  const [showDeposit, setShowDeposit] = useState(false);
-  const [showWithdrawal, setShowWithdrawal] = useState(false);
-  const [showGuide, setShowGuide] = useState(false);
+  const [botView, setBotView] = useState('main');
   const [startingSessionId, setStartingSessionId] = useState('');
   const finishingIds = useRef(new Set());
   const completedWindowIds = useRef(new Set());
@@ -2616,6 +2916,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
     .reduce((sum, deposit) => sum + deposit.amountUsd, 0);
   const demoProfit = sessions.reduce((sum, session) => sum + session.realizedProfit, 0);
   const demoEquity = botBalance + demoProfit;
+  const completedBotTrades = sessions.reduce((sum, session) => sum + Number(session.roundsCompleted || 0), 0);
   const lockedWithdrawals = withdrawals
     .filter((withdrawal) => ['requested', 'approved', 'paid'].includes(withdrawal.status))
     .reduce((sum, withdrawal) => sum + withdrawal.amountUsd, 0);
@@ -2625,6 +2926,19 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
   const availableBalance = Math.max(0, demoEquity - lockedWithdrawals - reservedBalance);
   const estimatedWinningRoundMin = Number(draft.tradeAmount || 0) * 0.08 * Number(draft.durationMinutes || 1);
   const estimatedWinningRoundMax = Number(draft.tradeAmount || 0) * 0.12 * Number(draft.durationMinutes || 1);
+  const selectedMarketQuote = quoteForSymbol(state.marketQuotes, draft.tradingPair);
+  const selectedMarketAvailable = selectedMarketQuote.marketOpen && selectedMarketQuote.status === 'live' && Number.isFinite(selectedMarketQuote.price);
+
+  function botMarketAvailable(symbol) {
+    const quote = quoteForSymbol(state.marketQuotes, symbol);
+    return quote.marketOpen && quote.status === 'live' && Number.isFinite(quote.price);
+  }
+
+  function botMarketMessage(symbol) {
+    const quote = quoteForSymbol(state.marketQuotes, symbol);
+    if (!quote.marketOpen || quote.status === 'closed') return `${symbol} is closed. Bots only run while that market is open.`;
+    return `${symbol} live pricing is unavailable. Refresh market data before starting the bot.`;
+  }
 
   useEffect(() => {
     const finished = sessions.filter((session) => {
@@ -2636,6 +2950,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
         && !completedWindowIds.current.has(windowId);
     });
     finished.forEach(async (session) => {
+      if (!botMarketAvailable(session.tradingPair)) return;
       const windowId = `${session.id}:${session.endsAt}`;
       finishingIds.current.add(session.id);
       completedWindowIds.current.add(windowId);
@@ -2652,7 +2967,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
         finishingIds.current.delete(session.id);
       }
     });
-  }, [tick, sessions.map((session) => `${session.id}:${session.status}:${session.endsAt}`).join('|')]);
+  }, [tick, sessions.map((session) => `${session.id}:${session.status}:${session.endsAt}`).join('|'), tradingAssets.map((asset) => `${asset.symbol}:${quoteForSymbol(state.marketQuotes, asset.symbol).status}`).join('|')]);
 
   if (!user) return <Gate setPage={setPage} />;
 
@@ -2665,6 +2980,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
     const tradeAmount = Number(draft.tradeAmount);
     const durationMinutes = Number(draft.durationMinutes);
     if (!selectedPackage) return flash('Select a bot package.');
+    if (!selectedMarketAvailable) return flash(botMarketMessage(draft.tradingPair));
     if (tradeAmount < selectedPackage.price) return flash(`Minimum bot deposit is ${formatMoney(selectedPackage.price)}.`);
     if (tradeAmount > availableBalance) return flash(`Trading amount cannot exceed your available balance of ${formatMoney(availableBalance)}.`);
     if (!draft.passkey.trim()) return flash('Enter your bot passkey to activate a session.');
@@ -2690,6 +3006,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
         ? 'This bot session is still pending approval.'
         : 'This bot session is not ready to start.');
     }
+    if (!botMarketAvailable(session.tradingPair)) return flash(botMarketMessage(session.tradingPair));
     if (startingSessionId === session.id) return;
     setStartingSessionId(session.id);
     try {
@@ -2703,6 +3020,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
   }
 
   async function controlBot(session, action) {
+    if (action === 'resume' && !botMarketAvailable(session.tradingPair)) return flash(botMarketMessage(session.tradingPair));
     try {
       await actions.controlBotSession(session.id, action);
       flash(`Bot ${action === 'stop' ? 'stopped' : `${action}d`}.`);
@@ -2711,41 +3029,17 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
     }
   }
 
-  return (
-    <main className="dashboard bot-console-page">
-      <section className="bot-hero panel">
-        <div className="bot-hero-copy">
-          <p className="eyebrow"><Bot size={16} /> Enchant Forex Finance Bot</p>
-          <h1>Bot Console</h1>
-          <p>The AI that trades while you rest.</p>
-        </div>
-        <div className="bot-hero-side">
-          <button className="secondary full" onClick={() => setShowGuide((value) => !value)}><LifeBuoy size={16} /> How it works</button>
-          <div className="bot-wallet-actions">
-            <button className="primary" onClick={() => { setShowDeposit((value) => !value); setShowWithdrawal(false); }}><CircleDollarSign size={16} /> Deposit</button>
-            <button className="secondary" onClick={() => { setShowWithdrawal((value) => !value); setShowDeposit(false); }}><Banknote size={16} /> Withdraw</button>
-          </div>
-          <div className="bot-balance-box">
-            <small>Available Balance</small>
-            <strong>{formatMoney(availableBalance)}</strong>
-            <Wallet size={20} />
-          </div>
-        </div>
-        <div className="bot-stat-grid">
-          <Metric title="Confirmed funding" value={formatMoney(botBalance)} icon={<CircleDollarSign />} />
-          <Metric title="Equity" value={formatMoney(demoEquity)} icon={<TrendingUp />} />
-          <Metric title="Active bots" value={activeSessions.length} icon={<Bot />} />
-          <Metric title="Target" value="79 / 100" icon={<Target />} />
-        </div>
-      </section>
-
-      {showGuide && (
+  if (botView === 'guide') {
+    return (
+      <main className="dashboard bot-console-page bot-focus-page bot-view-enter">
         <section className="panel bot-guide-panel">
           <div className="panel-head">
             <div>
-              <h2><LifeBuoy size={20} /> How It Works</h2>
+              <p className="eyebrow"><LifeBuoy size={16} /> Bot console guide</p>
+              <h1>How It Works</h1>
               <p>Fund the bot wallet, activate a package with an admin-issued passkey, then manage sessions and withdrawals from this console.</p>
             </div>
+            <button className="secondary" onClick={() => setBotView('main')}><ChevronRight className="flip-icon" size={16} /> Back</button>
           </div>
           <div className="bot-guide-grid">
             {[
@@ -2762,30 +3056,58 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
             ))}
           </div>
         </section>
-      )}
+      </main>
+    );
+  }
 
-      {showDeposit && (
+  if (botView === 'deposit') {
+    return (
+      <main className="dashboard bot-console-page bot-focus-page bot-view-enter">
         <BotDepositCenter
           deposits={deposits}
           actions={actions}
           tick={tick}
           flash={flash}
-          onClose={() => setShowDeposit(false)}
+          onClose={() => setBotView('main')}
         />
-      )}
+      </main>
+    );
+  }
 
-      {showWithdrawal && (
+  if (botView === 'withdraw') {
+    return (
+      <main className="dashboard bot-console-page bot-focus-page bot-view-enter">
         <BotWithdrawalCenter
           withdrawals={withdrawals}
           actions={actions}
           availableBalance={availableBalance}
           user={user}
           flash={flash}
-          onClose={() => setShowWithdrawal(false)}
+          onClose={() => setBotView('main')}
         />
-      )}
+      </main>
+    );
+  }
 
-      <section className="panel bot-activation">
+  return (
+    <main className="dashboard bot-console-page bot-view-enter">
+      <FinanceDashboardHero
+        eyebrow={<><Bot size={16} /> Enchant Forex Finance Bot</>}
+        name={user?.fullName || 'Bot Trader'}
+        label="Bot Console"
+        balance={availableBalance}
+        profit={demoProfit}
+        trades={completedBotTrades}
+        balanceLabel="Available Balance"
+        profitLabel="Bot Profit"
+        tradesLabel="Bot Trades"
+        className="bot-finance-hero"
+        onDeposit={() => setBotView('deposit')}
+        onWithdraw={() => setBotView('withdraw')}
+        onTrade={() => document.getElementById('bot-trade-console')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+      />
+
+      <section className="panel bot-activation" id="bot-trade-console">
         <div className="panel-head">
           <div>
             <h2><Zap size={20} /> Create Trading Bot</h2>
@@ -2793,15 +3115,15 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
           </div>
           <button className="secondary" onClick={() => selectPackage(selectedPackage)}><ShoppingCart size={16} /> Buy Passkey</button>
         </div>
-        <div className="paper-disclosure"><ShieldCheck size={18} /><span><strong>Marketing demonstration</strong> Profitable rounds vary from 8%–12% per selected minute; losses vary from 2%–6%. Each bot runs 100 rounds unless terminated early.</span></div>
+        <div className="paper-disclosure"><ShieldCheck size={18} /><span><strong>Marketing demonstration</strong> Profitable rounds vary from 8%â€“12% per selected minute; losses vary from 2%â€“6%. Each bot runs 100 rounds unless terminated early.</span></div>
         <div className="bot-form-grid">
           <label className="input-label">
             <span>Trading Pair</span>
             <select value={draft.tradingPair} onChange={(event) => setDraft({ ...draft, tradingPair: event.target.value })}>
-              <option value="XAU/USD">XAU/USD - Gold Spot</option>
-              <option value="BTC/USD">BTC/USD - Bitcoin</option>
-              <option value="ETH/USD">ETH/USD - Ethereum</option>
-              <option value="EUR/USD">EUR/USD - Forex</option>
+              {tradingAssets.map((asset) => {
+                const quote = quoteForSymbol(state.marketQuotes, asset.symbol);
+                return <option key={asset.symbol} value={asset.symbol}>{asset.symbol} - {asset.label} ({quote.status})</option>;
+              })}
             </select>
           </label>
           <Input label="Trade Amount (USD)" value={draft.tradeAmount} onChange={(value) => setDraft({ ...draft, tradeAmount: value })} />
@@ -2817,8 +3139,8 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
           <Input label="Enter Passkey" type="password" value={draft.passkey} onChange={(value) => setDraft({ ...draft, passkey: value })} />
         </div>
         <div className="bot-activation-footer">
-          <small>Available: {formatMoney(availableBalance)}. Profitable round range: +{formatMoney(estimatedWinningRoundMin)} to +{formatMoney(estimatedWinningRoundMax)}. Package minimum: {formatMoney(selectedPackage.price)}.</small>
-          <button className="primary full" onClick={activateBot}><Radio size={16} /> Create Bot</button>
+          <small>Available: {formatMoney(availableBalance)}. {draft.tradingPair}: {selectedMarketQuote.price === null ? 'No quote' : formatMoney(selectedMarketQuote.price)} ({selectedMarketQuote.status}). Profitable round range: +{formatMoney(estimatedWinningRoundMin)} to +{formatMoney(estimatedWinningRoundMax)}.</small>
+          <button className="primary full" onClick={activateBot} disabled={!selectedMarketAvailable}><Radio size={16} /> Create Bot</button>
         </div>
       </section>
 
@@ -2840,6 +3162,7 @@ function BotConsole({ state, actions, user, tick, setPage, flash }) {
                 onStart={() => startBot(session)}
                 onControl={(action) => controlBot(session, action)}
                 starting={startingSessionId === session.id}
+                marketQuote={quoteForSymbol(state.marketQuotes, session.tradingPair)}
               />
             ))}
           </div>
@@ -2893,7 +3216,7 @@ function DepositCenter({ plans, addresses, selectedPlan, setSelectedPlan, submit
   }
 
   return (
-    <section className="deposit-center">
+    <section className="deposit-center" id="investment-deposit">
       <div className="deposit-copy">
         <p className="eyebrow"><Wallet size={16} /> Make Deposit</p>
         <h2>Select your plan, send payment, then confirm.</h2>
@@ -2953,10 +3276,10 @@ function WithdrawalCenter({ investment, balance, planStatus, onWithdraw }) {
   );
 }
 
-function GrowthMilestoneChart({ investment, trades, livePrice }) {
+function GrowthMilestoneChart({ investment, trades, marketQuotes }) {
   const orderedTrades = [...(trades || [])].sort((a, b) => a.openedAt - b.openedAt);
   const balances = [Number(investment?.deposit || 0)];
-  orderedTrades.forEach((trade) => balances.push(balances[balances.length - 1] + tradeProfit(trade, livePrice)));
+  orderedTrades.forEach((trade) => balances.push(balances[balances.length - 1] + tradeProfit(trade, marketQuotes)));
   const minimum = Math.min(...balances);
   const maximum = Math.max(...balances);
   const range = Math.max(1, maximum - minimum);
@@ -3113,6 +3436,7 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   const [issuedPasskey, setIssuedPasskey] = useState(null);
   const [tradeDraft, setTradeDraft] = useState({
     investmentId: '',
+    symbol: 'XAU/USD',
     side: 'buy',
     quantity: '1',
     entryPrice: '',
@@ -3136,16 +3460,32 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   const botDeposits = state.botDeposits || [];
   const botWithdrawals = state.botWithdrawals || [];
   const poolValue = state.poolWallet.balance;
+  const selectedTradeAsset = marketAsset(tradeDraft.symbol);
+  const selectedTradeQuote = quoteForSymbol(state.marketQuotes, tradeDraft.symbol);
+  const adminTradeProfit = state.trades.reduce((sum, trade) => sum + tradeProfit(trade, state.marketQuotes), 0);
+  const adminBotProfit = botSessions.reduce((sum, session) => sum + Number(session.realizedProfit || 0), 0);
+  const adminBalance = activeInvestments.reduce((sum, investment) => sum + currentBalance(investment, state.trades, state.marketQuotes), 0);
+  const adminTradeCount = state.trades.length + botSessions.reduce((sum, session) => sum + Number(session.roundsCompleted || 0), 0);
 
   function userName(id) {
     return state.users.find((u) => u.id === id)?.fullName || 'Unknown';
   }
 
+  function userFor(id) {
+    return state.users.find((u) => u.id === id);
+  }
+
   async function approve(id) {
     const startedAt = nowMs();
     const investment = state.investments.find((i) => i.id === id);
+    if (!investment) return flash('Investment not found.');
     try {
       await actions.patchInvestment(id, { status: 'active', startedAt, endsAt: startedAt + investment.durationHours * 60 * 60 * 1000 });
+      await sendEmailNotification('deposit', userFor(investment.userId), {
+        planName: investment.planName,
+        deposit: investment.deposit,
+        status: 'approved'
+      });
       flash('Deposit approved.');
     } catch (error) {
       flash(error.message);
@@ -3153,8 +3493,17 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   }
 
   async function mutateInvestment(id, patch) {
+    const investment = state.investments.find((i) => i.id === id);
     try {
       await actions.patchInvestment(id, patch);
+      if (investment && (patch.withdrawalStep === 3 || patch.withdrawalStep === 5 || patch.status === 'withdrawn')) {
+        await sendEmailNotification('withdrawal', userFor(investment.userId), {
+          balance: currentBalance(investment, state.trades, state.marketQuotes),
+          asset: 'Investment balance',
+          status: patch.status === 'withdrawn' ? 'processed' : 'approved',
+          planName: investment.planName
+        });
+      }
     } catch (error) {
       flash(error.message);
     }
@@ -3186,8 +3535,8 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
         quantity,
         entryPrice,
         exitPrice,
-        symbol: 'XAU/USD',
-        priceSource: state.marketQuote.source || 'operator_record'
+        symbol: tradeDraft.symbol,
+        priceSource: selectedTradeQuote.source || 'operator_record'
       });
       setTradeDraft((current) => ({ ...current, exitPrice: '', externalTradeId: '', notes: '' }));
       flash('Trade recorded in the client ledger.');
@@ -3216,8 +3565,16 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   }
 
   async function reviewBotDeposit(id, status) {
+    const deposit = botDeposits.find((item) => item.id === id);
     try {
       await actions.patchBotDeposit(id, { status });
+      if (status === 'confirmed' && deposit) {
+        await sendEmailNotification('deposit', userFor(deposit.userId), {
+          asset: `${deposit.asset} ${deposit.network}`,
+          amountUsd: deposit.amountUsd,
+          status: 'confirmed'
+        });
+      }
       flash(status === 'confirmed' ? 'Bot deposit confirmed.' : 'Bot deposit cancelled.');
     } catch (error) {
       flash(error.message);
@@ -3225,7 +3582,7 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
   }
 
   async function reviewBotWithdrawal(withdrawal, status) {
-    let transactionId = '';
+    let transactionId = status === 'approved' ? generatedWithdrawalReference(withdrawal) : '';
     let adminNote = '';
     if (status === 'paid') {
       transactionId = window.prompt('Enter the blockchain transaction ID or payment reference:')?.trim() || '';
@@ -3236,6 +3593,14 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
     }
     try {
       await actions.patchBotWithdrawal(withdrawal.id, { status, transactionId, adminNote });
+      if (['approved', 'paid'].includes(status)) {
+        await sendEmailNotification('withdrawal', userFor(withdrawal.userId), {
+          amountUsd: withdrawal.amountUsd,
+          asset: `${withdrawal.asset} ${withdrawal.network}`,
+          status: status === 'paid' ? 'paid' : 'approved',
+          transactionId
+        });
+      }
       flash(status === 'paid' ? 'Bot withdrawal marked paid.' : `Bot withdrawal ${status}.`);
     } catch (error) {
       flash(error.message);
@@ -3317,12 +3682,21 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
 
   return (
     <main className="dashboard admin">
-      <section className="dash-hero">
-        <div>
-          <p className="eyebrow"><Crown size={16} /> Admin panel</p>
-          <h1>Control Center</h1>
-        </div>
-      </section>
+      <FinanceDashboardHero
+        eyebrow={<><Crown size={16} /> Admin panel</>}
+        name={user.fullName || 'Admin'}
+        label="Control Center"
+        balance={adminBalance}
+        profit={adminTradeProfit + adminBotProfit}
+        trades={adminTradeCount}
+        balanceLabel="Client Balance"
+        profitLabel="Total Profit"
+        tradesLabel="Total Trades"
+        className="admin-finance-hero"
+        onDeposit={() => document.getElementById('admin-deposits')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        onWithdraw={() => document.getElementById('admin-withdrawals')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        onTrade={() => document.getElementById('admin-record-trade')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+      />
       <section className="admin-command">
         <div><Radio size={18} /><strong>Realtime Operations</strong><span>Deposit approvals, payment claims, and maturity changes broadcast to dashboards.</span></div>
         <div><ShieldCheck size={18} /><strong>Release Gatekeeping</strong><span>Sequential confirmations cannot be skipped by users.</span></div>
@@ -3352,6 +3726,7 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
       </section>
 
       <AdminSection
+        id="admin-deposits"
         title="Deposit Management"
         headers={['User', 'Plan', 'Duration', 'Deposit', 'Wallet', 'Submitted', 'Action']}
         rows={pendingDeposits.map((i) => [
@@ -3376,7 +3751,7 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
           i.planName,
           `${i.durationHours} Hours`,
           formatMoney(i.deposit),
-          formatMoney(currentBalance(i, state.trades, state.marketQuote.price)),
+          formatMoney(currentBalance(i, state.trades, state.marketQuotes)),
           `${Math.round(progressPct(i, tick))}%`,
           statusText(i, tick),
           <div className="inline-actions">
@@ -3441,9 +3816,9 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
         {issuedPasskey && (
           <div className="issued-passkey">
             <div>
-              <small>Copy now — this code is shown only once</small>
+              <small>Copy now â€” this code is shown only once</small>
               <strong>{issuedPasskey.passkey}</strong>
-              <span>All clients · all bot packages · expires {new Date(issuedPasskey.expiresAt).toLocaleString()}</span>
+              <span>All clients Â· all bot packages Â· expires {new Date(issuedPasskey.expiresAt).toLocaleString()}</span>
             </div>
             <button onClick={copyIssuedPasskey}><Copy size={16} /> Copy</button>
           </div>
@@ -3483,14 +3858,23 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
           ) : session.status
         ])}
       />
-      <section className="workbench">
+      <section className="workbench" id="admin-record-trade">
         <div className="panel">
-          <h2>Record Gold Trade</h2>
+          <h2>Record Trade</h2>
           <label className="input-label">
             <span>Investment</span>
             <select value={tradeDraft.investmentId} onChange={(event) => setTradeDraft({ ...tradeDraft, investmentId: event.target.value })}>
               <option value="">Select investment</option>
               {activeInvestments.map((investment) => <option key={investment.id} value={investment.id}>{userName(investment.userId)} - {investment.planName}</option>)}
+            </select>
+          </label>
+          <label className="input-label">
+            <span>Asset Traded</span>
+            <select value={tradeDraft.symbol} onChange={(event) => setTradeDraft({ ...tradeDraft, symbol: event.target.value })}>
+              {tradingAssets.map((asset) => {
+                const quote = quoteForSymbol(state.marketQuotes, asset.symbol);
+                return <option key={asset.symbol} value={asset.symbol}>{asset.symbol} - {asset.label} ({quote.status})</option>;
+              })}
             </select>
           </label>
           <label className="input-label">
@@ -3507,28 +3891,29 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
               <option value="open">Open</option>
             </select>
           </label>
-          <Input label="Quantity (XAU)" value={tradeDraft.quantity} onChange={(value) => setTradeDraft({ ...tradeDraft, quantity: value })} />
+          <Input label={`Quantity (${selectedTradeAsset.unit})`} value={tradeDraft.quantity} onChange={(value) => setTradeDraft({ ...tradeDraft, quantity: value })} />
           <Input label="Entry Price" value={tradeDraft.entryPrice} onChange={(value) => setTradeDraft({ ...tradeDraft, entryPrice: value })} />
           {tradeDraft.status === 'closed' && <Input label="Exit Price" value={tradeDraft.exitPrice} onChange={(value) => setTradeDraft({ ...tradeDraft, exitPrice: value })} />}
           <Input label="Broker Trade ID" value={tradeDraft.externalTradeId} onChange={(value) => setTradeDraft({ ...tradeDraft, externalTradeId: value })} />
           <Input label="Notes" value={tradeDraft.notes} onChange={(value) => setTradeDraft({ ...tradeDraft, notes: value })} />
-          <p className="hint">Live XAU/USD: {state.marketQuote.price === null ? 'Unavailable' : formatMoney(state.marketQuote.price)}. P&amp;L is calculated by the database.</p>
+          <p className="hint">Live {tradeDraft.symbol}: {selectedTradeQuote.price === null ? 'Unavailable' : formatMoney(selectedTradeQuote.price)} ({selectedTradeQuote.status}). P&amp;L is calculated by the database.</p>
           <button className="primary full" onClick={recordTrade}>Record Trade</button>
         </div>
         <div className="panel">
           <h2>Trade Ledger</h2>
           <DataTable
-            headers={['Client', 'Side', 'Quantity', 'Entry', 'Exit / Live', 'Status', 'P&L', 'Action']}
+            headers={['Client', 'Market', 'Side', 'Quantity', 'Entry', 'Exit / Live', 'Status', 'P&L', 'Action']}
             rows={state.trades.map((trade) => {
               const investment = state.investments.find((item) => item.id === trade.investmentId);
               return [
                 userName(investment?.userId),
+                trade.symbol,
                 trade.side.toUpperCase(),
                 trade.quantity,
                 formatMoney(trade.entryPrice),
-                formatMoney(trade.exitPrice ?? state.marketQuote.price ?? 0),
+                formatMoney(trade.exitPrice ?? livePriceForTrade(trade, state.marketQuotes) ?? 0),
                 trade.status,
-                formatMoney(tradeProfit(trade, state.marketQuote.price)),
+                formatMoney(tradeProfit(trade, state.marketQuotes)),
                 <button onClick={() => deleteRecordedTrade(trade.id)}><Trash2 size={15} /> Delete</button>
               ];
             })}
@@ -3539,20 +3924,21 @@ function AdminPanel({ state, actions, user, tick, setPage, flash }) {
         <AdminSection
           title="Withdrawal Confirmation"
           headers={['User', 'Current Balance', 'Amount Due', 'Action']}
-          rows={pendingTax.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuote.price)), formatMoney(currentBalance(i, state.trades, state.marketQuote.price) * TAX_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 3 })}><Check size={15} /> Confirm Tax Cleared</button>])}
+          rows={pendingTax.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuotes)), formatMoney(currentBalance(i, state.trades, state.marketQuotes) * TAX_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 3 })}><Check size={15} /> Confirm Tax Cleared</button>])}
         />
       )}
       {pendingFees.length > 0 && (
         <AdminSection
           title="Funds Release Confirmation"
           headers={['User', 'Current Balance', 'Amount Due', 'Action']}
-          rows={pendingFees.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuote.price)), formatMoney(currentBalance(i, state.trades, state.marketQuote.price) * WITHDRAWAL_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 5 })}><Check size={15} /> Confirm Withdrawal Fee Cleared</button>])}
+          rows={pendingFees.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuotes)), formatMoney(currentBalance(i, state.trades, state.marketQuotes) * WITHDRAWAL_RATE), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 5 })}><Check size={15} /> Confirm Withdrawal Fee Cleared</button>])}
         />
       )}
       <AdminSection
+        id="admin-withdrawals"
         title="Withdrawal Completion"
         headers={['User', 'Final Balance', 'Wallet', 'Action']}
-        rows={readyComplete.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuote.price)), walletFor(state, i.userId), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 6, status: 'withdrawn' })}><Check size={15} /> Mark Processed</button>])}
+        rows={readyComplete.map((i) => [userName(i.userId), formatMoney(currentBalance(i, state.trades, state.marketQuotes)), walletFor(state, i.userId), <button onClick={() => mutateInvestment(i.id, { withdrawalStep: 6, status: 'withdrawn' })}><Check size={15} /> Mark Processed</button>])}
       />
 
       <section className="workbench">
@@ -3610,8 +3996,8 @@ function walletFor(state, userId) {
   return state.users.find((u) => u.id === userId)?.wallet || '';
 }
 
-function AdminSection({ title, headers, rows }) {
-  return <section className="panel"><h2>{title}</h2><DataTable headers={headers} rows={rows} /></section>;
+function AdminSection({ id, title, headers, rows }) {
+  return <section className="panel" id={id}><h2>{title}</h2><DataTable headers={headers} rows={rows} /></section>;
 }
 
 function RowActions({ approve, reject }) {
@@ -3620,6 +4006,75 @@ function RowActions({ approve, reject }) {
 
 function Metric({ title, value, icon }) {
   return <article className="metric"><span>{React.cloneElement(icon, { size: 20 })}</span><small>{title}</small><strong>{value}</strong></article>;
+}
+
+function FinanceDashboardHero({
+  eyebrow,
+  name,
+  label,
+  balance,
+  profit,
+  trades,
+  balanceLabel,
+  profitLabel,
+  tradesLabel,
+  onDeposit,
+  onWithdraw,
+  onTrade,
+  withdrawDisabled = false,
+  className = ''
+}) {
+  const firstName = String(name || 'Trader').split(' ')[0] || 'Trader';
+  const isProfitUp = Number(profit || 0) >= 0;
+  const greeting = timeGreeting();
+  return (
+    <section className={`finance-app-hero ${className}`}>
+      <div className="finance-hero-head">
+        <div>
+          <p className="eyebrow">{eyebrow}</p>
+          <span>{greeting},</span>
+          <h1>{firstName}</h1>
+          <small>{label}</small>
+        </div>
+        <button className="finance-icon-button" type="button" onClick={onTrade} title="Open trade area"><TrendingUp size={22} /></button>
+      </div>
+
+      <div className="finance-balance-card">
+        <small><span /> {balanceLabel}</small>
+        <strong>{formatMoney(balance)}</strong>
+        <i>{isProfitUp ? '+' : ''}{formatMoney(profit)}</i>
+      </div>
+
+      <div className="finance-action-grid">
+        <button className="active" type="button" onClick={onDeposit}><Wallet size={26} /><span>Deposit</span></button>
+        <button type="button" onClick={onWithdraw} disabled={withdrawDisabled}><Banknote size={26} /><span>Withdraw</span></button>
+        <button type="button" onClick={onTrade}><TrendingUp size={26} /><span>Trade</span></button>
+      </div>
+
+      <div className="finance-summary-grid">
+        <article className={isProfitUp ? 'up' : 'down'}>
+          <small><TrendingUp size={16} /> {profitLabel}</small>
+          <strong>{formatMoney(profit)}</strong>
+          <FinanceSparkline up={isProfitUp} />
+        </article>
+        <article>
+          <small><Radio size={16} /> {tradesLabel}</small>
+          <strong>{Number(trades || 0).toLocaleString()}</strong>
+          <FinanceSparkline up />
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function FinanceSparkline({ up }) {
+  const points = up ? '0,34 14,30 28,20 42,24 58,23 72,30 88,17 100,21' : '0,18 14,22 30,28 45,24 62,31 78,35 100,29';
+  return (
+    <svg className="finance-sparkline" viewBox="0 0 100 44" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={points} />
+      <polygon points={`0,44 ${points} 100,44`} />
+    </svg>
+  );
 }
 
 function DataTable({ headers = [], rows }) {
@@ -3738,3 +4193,5 @@ createRoot(document.getElementById('root')).render(
     <App />
   </ErrorBoundary>
 );
+
+

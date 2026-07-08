@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: dark;
   --bg: #06080d;
   --panel: #10151f;
@@ -8511,4 +8511,97 @@ table tr:hover td {
   color: #08744f !important;
   -webkit-text-fill-color: #08744f;
 }
+/* Functional support: verification resend button and viewport containment. */
+.auth-form-panel .auth-resend {
+  grid-column: 1 / -1;
+  justify-content: center;
+  min-height: 46px;
+}
 
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+@supports (overflow: clip) {
+  html,
+  body,
+  #root {
+    overflow-x: clip;
+  }
+}
+
+body {
+  min-width: 0 !important;
+}
+
+main,
+header,
+footer,
+section,
+article,
+aside,
+nav,
+form,
+table,
+img,
+svg,
+canvas {
+  max-width: 100%;
+}
+
+main,
+section,
+article,
+.site-header,
+.global-footer,
+.footer,
+.panel,
+.auth-panel,
+.dashboard,
+.admin-dashboard,
+.bot-console-page,
+.hero,
+.section,
+.workbench,
+.cards-grid,
+.plan-grid,
+.feature-matrix,
+.architecture-grid,
+.reputation-grid,
+.bot-package-grid,
+.finance-app-hero,
+.finance-summary-grid,
+.finance-action-grid,
+.terminal-card,
+.command-console {
+  min-width: 0;
+}
+
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto !important;
+  overscroll-behavior-inline: contain;
+}
+
+.modal {
+  max-width: calc(100% - 1.5rem) !important;
+}
+
+.hero-content h1 {
+  max-width: 100% !important;
+}
+
+@media (max-width: 760px) {
+  .market-tape {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    overflow-x: hidden !important;
+  }
+
+  .market-tape span {
+    min-width: 0 !important;
+  }
+}

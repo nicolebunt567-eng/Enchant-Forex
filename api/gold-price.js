@@ -1,5 +1,12 @@
 const DEFAULT_SYMBOL = 'XAU/USD';
 const ALLOWED_SYMBOLS = new Set(['XAU/USD', 'BTC/USD', 'ETH/USD', 'EUR/USD']);
+const CRYPTO_SYMBOLS = new Set(['BTC/USD', 'ETH/USD']);
+const YAHOO_SYMBOLS = {
+  'XAU/USD': 'GC=F',
+  'BTC/USD': 'BTC-USD',
+  'ETH/USD': 'ETH-USD',
+  'EUR/USD': 'EURUSD=X'
+};
 
 function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
@@ -19,15 +26,63 @@ function calculateRsi(closes) {
   return 100 - (100 / (1 + relativeStrength));
 }
 
-export default async function handler(request, response) {
-  if (!process.env.TWELVE_DATA_API_KEY) {
-    return response.status(503).json({ message: 'Live gold pricing is not configured.' });
-  }
+function newYorkMarketTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    dayIndex: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(value.weekday),
+    minutes: Number(value.hour) * 60 + Number(value.minute)
+  };
+}
 
+function isMarketOpen(symbol, date = new Date()) {
+  if (CRYPTO_SYMBOLS.has(symbol)) return true;
+  const { dayIndex, minutes } = newYorkMarketTime(date);
+  const sessionOpen = 17 * 60;
+  if (dayIndex === 6) return false;
+  if (dayIndex === 0) return minutes >= sessionOpen;
+  if (dayIndex === 5) return minutes < sessionOpen;
+  return true;
+}
+
+async function fetchYahooQuote(symbol) {
+  const yahooSymbol = YAHOO_SYMBOLS[symbol] || YAHOO_SYMBOLS[DEFAULT_SYMBOL];
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}`);
+  url.searchParams.set('interval', '1m');
+  url.searchParams.set('range', '1d');
+  const marketResponse = await fetch(url, { headers: { Accept: 'application/json' } });
+  const payload = await marketResponse.json();
+  const meta = payload?.chart?.result?.[0]?.meta;
+  const price = Number(meta?.regularMarketPrice);
+  if (!marketResponse.ok || !Number.isFinite(price)) {
+    throw new Error(payload?.chart?.error?.description || `Yahoo Finance returned ${marketResponse.status}`);
+  }
+  return {
+    symbol,
+    price,
+    currency: meta.currency || 'USD',
+    source: symbol === 'XAU/USD' ? 'Yahoo Finance (COMEX gold futures)' : 'Yahoo Finance',
+    updatedAt: Number(meta.regularMarketTime) ? Number(meta.regularMarketTime) * 1000 : Date.now()
+  };
+}
+
+export default async function handler(request, response) {
   try {
     const requestedSymbol = String(request.query?.symbol || DEFAULT_SYMBOL).toUpperCase();
     const symbol = ALLOWED_SYMBOLS.has(requestedSymbol) ? requestedSymbol : DEFAULT_SYMBOL;
     const analysisRequested = request.query?.analysis === '1';
+    if (!process.env.TWELVE_DATA_API_KEY) {
+      const fallback = await fetchYahooQuote(symbol);
+      const marketOpen = isMarketOpen(symbol);
+      response.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=300');
+      return response.status(200).json({ ...fallback, marketOpen, status: marketOpen ? 'live' : 'closed' });
+    }
     const url = new URL(`https://api.twelvedata.com/${analysisRequested ? 'time_series' : 'price'}`);
     url.searchParams.set('symbol', symbol);
     url.searchParams.set('apikey', process.env.TWELVE_DATA_API_KEY);
@@ -44,6 +99,12 @@ export default async function handler(request, response) {
     const price = analysisRequested ? closes[0] : Number(payload?.price);
 
     if (!marketResponse.ok || !Number.isFinite(price)) {
+      if (!analysisRequested) {
+        const fallback = await fetchYahooQuote(symbol);
+        const marketOpen = isMarketOpen(symbol);
+        response.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=300');
+        return response.status(200).json({ ...fallback, marketOpen, status: marketOpen ? 'live' : 'closed' });
+      }
       throw new Error(payload?.message || `Market data provider returned ${marketResponse.status}`);
     }
 
@@ -53,13 +114,15 @@ export default async function handler(request, response) {
     const bias = analysisRequested ? (shortAverage >= longAverage ? 'bullish' : 'bearish') : null;
     const momentum = analysisRequested ? ((price - closes[Math.min(4, closes.length - 1)]) / price) * 100 : null;
 
-    response.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=20');
+    response.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=300');
     return response.status(200).json({
       symbol,
       price,
       currency: 'USD',
       source: 'Twelve Data',
       updatedAt: Date.now(),
+      marketOpen: isMarketOpen(symbol),
+      status: isMarketOpen(symbol) ? 'live' : 'closed',
       ...(analysisRequested ? {
         bias,
         indicators: {

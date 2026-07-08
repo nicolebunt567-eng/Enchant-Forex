@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
@@ -6,7 +6,7 @@ import { Server } from 'socket.io';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 const app = express();
 const server = http.createServer(app);
@@ -23,22 +23,87 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, status: 'online', timestamp: new Date().toISOString() });
 });
 
-app.get('/api/gold-price', async (req, res) => {
-  if (!process.env.TWELVE_DATA_API_KEY) {
-    return res.status(503).json({ message: 'Live gold pricing is not configured.' });
+const DEFAULT_MARKET_SYMBOL = 'XAU/USD';
+const ALLOWED_MARKET_SYMBOLS = new Set(['XAU/USD', 'BTC/USD', 'ETH/USD', 'EUR/USD']);
+const CRYPTO_MARKET_SYMBOLS = new Set(['BTC/USD', 'ETH/USD']);
+const YAHOO_MARKET_SYMBOLS = {
+  'XAU/USD': 'GC=F',
+  'BTC/USD': 'BTC-USD',
+  'ETH/USD': 'ETH-USD',
+  'EUR/USD': 'EURUSD=X'
+};
+
+function newYorkMarketTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    dayIndex: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(value.weekday),
+    minutes: Number(value.hour) * 60 + Number(value.minute)
+  };
+}
+
+function isMarketOpen(symbol, date = new Date()) {
+  if (CRYPTO_MARKET_SYMBOLS.has(symbol)) return true;
+  const { dayIndex, minutes } = newYorkMarketTime(date);
+  const sessionOpen = 17 * 60;
+  if (dayIndex === 6) return false;
+  if (dayIndex === 0) return minutes >= sessionOpen;
+  if (dayIndex === 5) return minutes < sessionOpen;
+  return true;
+}
+
+async function fetchYahooQuote(symbol) {
+  const yahooSymbol = YAHOO_MARKET_SYMBOLS[symbol] || YAHOO_MARKET_SYMBOLS[DEFAULT_MARKET_SYMBOL];
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}`);
+  url.searchParams.set('interval', '1m');
+  url.searchParams.set('range', '1d');
+  const marketResponse = await fetch(url, { headers: { Accept: 'application/json' } });
+  const payload = await marketResponse.json();
+  const meta = payload?.chart?.result?.[0]?.meta;
+  const price = Number(meta?.regularMarketPrice);
+  if (!marketResponse.ok || !Number.isFinite(price)) {
+    throw new Error(payload?.chart?.error?.description || `Yahoo Finance returned ${marketResponse.status}`);
   }
+  return {
+    symbol,
+    price,
+    currency: meta.currency || 'USD',
+    source: symbol === 'XAU/USD' ? 'Yahoo Finance (COMEX gold futures)' : 'Yahoo Finance',
+    updatedAt: Number(meta.regularMarketTime) ? Number(meta.regularMarketTime) * 1000 : Date.now()
+  };
+}
+
+app.get('/api/gold-price', async (req, res) => {
   try {
+    const requestedSymbol = String(req.query?.symbol || DEFAULT_MARKET_SYMBOL).toUpperCase();
+    const symbol = ALLOWED_MARKET_SYMBOLS.has(requestedSymbol) ? requestedSymbol : DEFAULT_MARKET_SYMBOL;
+    const marketOpen = isMarketOpen(symbol);
+    if (!process.env.TWELVE_DATA_API_KEY) {
+      const fallback = await fetchYahooQuote(symbol);
+      res.set('Cache-Control', 'public, max-age=180, stale-while-revalidate=300');
+      return res.json({ ...fallback, marketOpen, status: marketOpen ? 'live' : 'closed' });
+    }
     const url = new URL('https://api.twelvedata.com/price');
-    url.searchParams.set('symbol', 'XAU/USD');
+    url.searchParams.set('symbol', symbol);
     url.searchParams.set('apikey', process.env.TWELVE_DATA_API_KEY);
     const marketResponse = await fetch(url, { headers: { Accept: 'application/json' } });
     const payload = await marketResponse.json();
     const price = Number(payload?.price);
-    if (!marketResponse.ok || !Number.isFinite(price)) throw new Error(payload?.message || `Market data provider returned ${marketResponse.status}`);
-    res.set('Cache-Control', 'public, max-age=10, stale-while-revalidate=20');
-    res.json({ symbol: 'XAU/USD', price, currency: 'USD', source: 'Twelve Data', updatedAt: Date.now() });
+    if (!marketResponse.ok || !Number.isFinite(price)) {
+      const fallback = await fetchYahooQuote(symbol);
+      res.set('Cache-Control', 'public, max-age=180, stale-while-revalidate=300');
+      return res.json({ ...fallback, marketOpen, status: marketOpen ? 'live' : 'closed' });
+    }
+    res.set('Cache-Control', 'public, max-age=180, stale-while-revalidate=300');
+    res.json({ symbol, price, currency: 'USD', source: 'Twelve Data', updatedAt: Date.now(), marketOpen, status: marketOpen ? 'live' : 'closed' });
   } catch (error) {
-    res.status(502).json({ message: 'Unable to read the live gold price.', detail: error.message });
+    res.status(502).json({ message: 'Unable to read live market data.', detail: error.message });
   }
 });
 
@@ -233,6 +298,54 @@ function publicUser(user) {
   return object;
 }
 
+async function sendEmailNotification(type, user, details = {}) {
+  if (!process.env.RESEND_API_KEY || !user?.email) return;
+  const subject = type === 'registration'
+    ? 'Welcome to Enchant Forex'
+    : type === 'deposit'
+      ? (['approved', 'confirmed'].includes(details.status) ? 'Deposit approved' : 'Deposit request received')
+      : (['approved', 'paid', 'processed'].includes(details.status) ? 'Withdrawal approved' : 'Withdrawal request received');
+  const heading = type === 'registration'
+    ? 'Your Enchant Forex account is ready'
+    : type === 'deposit'
+      ? (['approved', 'confirmed'].includes(details.status) ? 'Your deposit has been approved' : 'Your deposit request is in review')
+      : (['approved', 'paid', 'processed'].includes(details.status) ? 'Your withdrawal has been approved' : 'Your withdrawal request is in review');
+  const amount = details.amountUsd || details.deposit || details.balance;
+  const rows = [
+    details.country ? ['Country', details.country] : null,
+    details.phone ? ['Phone', details.phone] : null,
+    details.planName ? ['Plan', details.planName] : null,
+    amount ? ['Amount', new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(amount))] : null,
+    details.asset ? ['Asset', details.asset] : null,
+    details.status ? ['Status', details.status] : null
+  ].filter(Boolean);
+  const rowsHtml = rows.map(([label, value]) => `<tr><td style="padding:8px 0;color:#8b95a7;">${label}</td><td style="padding:8px 0;color:#f6d777;text-align:right;font-weight:700;">${value}</td></tr>`).join('');
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: process.env.EMAIL_FROM || 'Enchant Forex <notifications@enchantforex.com>',
+      to: [user.email],
+      subject,
+      html: `
+        <div style="margin:0;padding:28px;background:#050608;color:#f8f3e5;font-family:Inter,Segoe UI,Arial,sans-serif;">
+          <div style="max-width:560px;margin:0 auto;border:1px solid rgba(246,215,119,.28);background:#090b0f;padding:28px;">
+            <p style="margin:0 0 14px;color:#f6d777;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;">Enchant Forex</p>
+            <h1 style="margin:0 0 12px;color:#f8dc77;font-size:28px;line-height:1.05;">${heading}</h1>
+            <p style="margin:0 0 18px;color:#d8caaa;font-size:15px;line-height:1.65;">Hi ${user.fullName || 'Member'}, your account has a new update.</p>
+            ${rowsHtml ? `<table style="width:100%;border-top:1px solid rgba(246,215,119,.18);border-bottom:1px solid rgba(246,215,119,.18);border-collapse:collapse;margin:20px 0;">${rowsHtml}</table>` : ''}
+            <p style="margin:22px 0 0;color:#8b95a7;font-size:12px;line-height:1.6;">Sign in to your Enchant Forex dashboard for the latest status.</p>
+          </div>
+        </div>
+      `,
+      ...(process.env.EMAIL_REPLY_TO || process.env.ADMIN_EMAIL ? { reply_to: process.env.EMAIL_REPLY_TO || process.env.ADMIN_EMAIL } : {})
+    })
+  }).catch(() => {});
+}
+
 function auth(requiredRole) {
   return async (req, res, next) => {
     try {
@@ -280,21 +393,68 @@ async function seed() {
       { name: '2-Day Investment Plan', durationHours: 48, deposit: 10000, returnAmount: 95000 }
     ]);
   }
-  if (!await User.findOne({ email: 'admin@enchantforex.local' })) {
+  if (!await User.findOne({ email: 'admin@enchant-forex.local' })) {
     await User.create({
       fullName: 'Enchant Forex Administrator',
       nationality: 'United States',
-      email: 'admin@enchantforex.local',
+      email: 'admin@enchant-forex.local',
       phone: '+1 702 218 7068',
       wallet: 'Admin treasury',
       role: 'admin',
       passwordHash: await bcrypt.hash('admin123', 10)
-    });
-  }
+  });
+}
+
+const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+
+function emailVerificationSecret() {
+  return process.env.EMAIL_VERIFICATION_SECRET || process.env.JWT_SECRET || process.env.RESEND_API_KEY || 'enchant-forex-test-secret';
+}
+
+function signEmailVerification(payload) {
+  return createHmac('sha256', emailVerificationSecret()).update(payload).digest('hex');
+}
+
+function emailVerificationToken(email, code) {
+  const payload = Buffer.from(JSON.stringify({ email, code, expiresAt: Date.now() + EMAIL_CODE_TTL_MS })).toString('base64url');
+  return `${payload}.${signEmailVerification(payload)}`;
+}
+
+function verifyEmailToken(token, email, code) {
+  const [payload, signature] = String(token || '').split('.');
+  if (!payload || !signature) return false;
+  const expected = signEmailVerification(payload);
+  const left = Buffer.from(signature);
+  const right = Buffer.from(expected);
+  if (left.length !== right.length || !timingSafeEqual(left, right)) return false;
+  const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  return data.email === email && data.code === code && Date.now() <= data.expiresAt;
+}
+
+async function sendVerificationCode(email, code) {
+  if (!process.env.RESEND_API_KEY) return { skipped: true };
+  const emailResponse = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: process.env.EMAIL_FROM || 'Enchant Forex <notifications@enchantforex.com>',
+      to: [email],
+      subject: 'Your Enchant Forex verification code',
+      html: `<p>Your Enchant Forex verification code is <strong style="font-size:24px;letter-spacing:4px;">${code}</strong>. It expires in 10 minutes.</p>`,
+      ...(process.env.EMAIL_REPLY_TO || process.env.ADMIN_EMAIL ? { reply_to: process.env.EMAIL_REPLY_TO || process.env.ADMIN_EMAIL } : {})
+    })
+  });
+  const payload = await emailResponse.json().catch(() => ({}));
+  if (!emailResponse.ok) throw new Error(payload.message || 'Unable to send verification code.');
+  return { id: payload.id };
+}
   if (!await Address.countDocuments()) {
     await Address.create({
-      usdt: 'TQ9xenchantforexReserveTRC20Address',
-      eth: '0xenchantforexReserveEthAddress',
+      usdt: 'TQ9xEnchantForexReserveTRC20Address',
+      eth: '0xEnchantForexReserveEthAddress',
       btc: 'bc1qenchantforexreservebtcaddress'
     });
   }
@@ -302,13 +462,37 @@ async function seed() {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { fullName, nationality, email, phone, password, wallet } = req.body;
+    const { fullName, nationality, email, phone, password, wallet, verificationId, verificationCode } = req.body;
     if (!fullName || !nationality || !email || !phone || !password || !wallet) return res.status(400).json({ message: 'All registration fields are required' });
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (!verifyEmailToken(verificationId, normalizedEmail, String(verificationCode || '').trim())) return res.status(400).json({ message: 'Verify your email before creating an account.' });
     if (await User.findOne({ email })) return res.status(409).json({ message: 'Email already registered' });
-    const user = await User.create({ fullName, nationality, email, phone, wallet, passwordHash: await bcrypt.hash(password, 10) });
+    const user = await User.create({ fullName, nationality, email: normalizedEmail, phone, wallet, passwordHash: await bcrypt.hash(password, 10) });
     res.json({ token: tokenFor(user), user: publicUser(user) });
   } catch {
     res.status(500).json({ message: 'Registration failed' });
+  }
+});
+
+app.post('/api/email-verification', async (req, res) => {
+  try {
+    const { action = 'send', email = '', code = '', verificationId = '' } = req.body;
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return res.status(400).json({ message: 'Enter a valid email address.' });
+    if (action === 'verify') {
+      if (!verifyEmailToken(verificationId, normalizedEmail, String(code).trim())) return res.status(400).json({ message: 'Invalid or expired verification code.' });
+      return res.json({ ok: true });
+    }
+    const generatedCode = String(randomInt(100000, 1000000));
+    const result = await sendVerificationCode(normalizedEmail, generatedCode);
+    res.json({
+      ok: true,
+      verificationId: emailVerificationToken(normalizedEmail, generatedCode),
+      expiresIn: EMAIL_CODE_TTL_MS / 1000,
+      ...(result.skipped || process.env.EMAIL_TEST_MODE === 'true' ? { testCode: generatedCode } : {})
+    });
+  } catch (error) {
+    res.status(400).json({ message: error.message || 'Unable to send verification code.' });
   }
 });
 
@@ -403,6 +587,7 @@ app.post('/api/me/bot-sessions', auth(), async (req, res) => {
 app.post('/api/me/bot-sessions/:id/start', auth(), async (req, res) => {
   const session = await BotSession.findOne({ _id: req.params.id, userId: req.user._id, status: 'ready' });
   if (!session) return res.status(404).json({ message: 'Ready paper session not found' });
+  if (!isMarketOpen(session.tradingPair)) return res.status(409).json({ message: `${session.tradingPair} is closed. Bots only run while that market is open.` });
   session.status = 'active';
   session.mode = 'paper';
   session.bias = 'bullish';
@@ -429,6 +614,7 @@ app.post('/api/me/bot-sessions/:id/complete', auth(), async (req, res) => {
   const now = new Date();
   const session = await BotSession.findOne({ _id: req.params.id, userId: req.user._id });
   if (!session) return res.status(404).json({ message: 'Demo bot not found' });
+  if (!isMarketOpen(session.tradingPair)) return res.status(409).json({ message: `${session.tradingPair} is closed. Bot rounds resume when the market opens.` });
   if (session.status !== 'active' || !session.endsAt || session.endsAt > now) {
     return res.json(session);
   }
@@ -469,6 +655,7 @@ app.post('/api/me/bot-sessions/:id/control', auth(), async (req, res) => {
     session.status = 'paused';
     session.endsAt = undefined;
   } else if (req.body.action === 'resume' && session.status === 'paused') {
+    if (!isMarketOpen(session.tradingPair)) return res.status(409).json({ message: `${session.tradingPair} is closed. Bots only run while that market is open.` });
     session.status = 'active';
     session.endsAt = new Date(Date.now() + session.durationMinutes * 60 * 1000);
   } else if (req.body.action === 'stop' && ['active', 'paused'].includes(session.status)) {
@@ -504,7 +691,7 @@ app.post('/api/me/bot-deposits', auth(), async (req, res) => {
 
     const addresses = await Address.findOne();
     const paymentAddress = addresses?.[addressKey];
-    if (!paymentAddress || /enchantforex/i.test(paymentAddress)) {
+    if (!paymentAddress || /enchant/i.test(paymentAddress)) {
       return res.status(503).json({ message: 'The selected payment address is not configured' });
     }
 
@@ -644,6 +831,14 @@ app.patch('/api/admin/bot-deposits/:id', auth('admin'), async (req, res) => {
   };
   const deposit = await BotDeposit.findByIdAndUpdate(req.params.id, patch, { new: true });
   if (!deposit) return res.status(404).json({ message: 'Bot deposit not found' });
+  if (req.body.status === 'confirmed') {
+    const depositUser = await User.findById(deposit.userId);
+    await sendEmailNotification('deposit', depositUser, {
+      asset: `${deposit.asset} ${deposit.network}`,
+      amountUsd: deposit.amountUsd,
+      status: 'confirmed'
+    });
+  }
   io.emit('bot-deposit:reviewed', deposit);
   res.json(deposit);
 });
@@ -684,6 +879,22 @@ app.patch('/api/admin/investments/:id', auth('admin'), async (req, res) => {
   }
   const investment = await Investment.findByIdAndUpdate(req.params.id, patch, { new: true });
   if (patch.manualBalance !== undefined) await BalanceEdit.create({ investmentId: investment._id, adminId: req.user._id, value: patch.manualBalance });
+  if (patch.status === 'active') {
+    const investmentUser = await User.findById(investment.userId);
+    await sendEmailNotification('deposit', investmentUser, {
+      planName: investment.planName,
+      deposit: investment.deposit,
+      status: 'approved'
+    });
+  }
+  if (patch.withdrawalStep === 3 || patch.withdrawalStep === 5 || patch.status === 'withdrawn') {
+    const investmentUser = await User.findById(investment.userId);
+    await sendEmailNotification('withdrawal', investmentUser, {
+      balance: await liveBalance(investment),
+      asset: 'Investment balance',
+      status: patch.status === 'withdrawn' ? 'processed' : 'approved'
+    });
+  }
   io.emit('investment:updated', investment);
   res.json(investment);
 });
@@ -736,12 +947,15 @@ io.on('connection', (socket) => {
   socket.emit('connected', { ok: true });
 });
 
-const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/enchantforex';
+const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/enchant-forex';
 const port = process.env.PORT || 4000;
 
 mongoose.connect(mongoUri).then(async () => {
   await seed();
   server.listen(port, () => console.log(`Enchant Forex API listening on ${port}`));
 });
+
+
+
 
 
